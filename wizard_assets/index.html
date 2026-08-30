@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Twin Setup</title>
+    <link rel="stylesheet" href="/wizard_assets/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Twin Setup</h1>
+            <p class="subtitle">Your personal AI assistant — set up in 5 minutes</p>
+        </header>
+
+        <div class="progress-bar">
+            <div class="progress-step active" id="step-1">1. Telegram Bot</div>
+            <div class="progress-step" id="step-2">2. Your ID</div>
+            <div class="progress-step" id="step-3">3. AI Brain</div>
+            <div class="progress-step" id="step-4">4. Finish</div>
+        </div>
+
+        <!-- Step 1: Create Telegram Bot -->
+        <div class="step active" id="panel-1">
+            <h2>Step 1: Create Your Telegram Bot</h2>
+            <p>Your AI twin lives in a Telegram chat. First, you need to create a bot.</p>
+
+            <div class="instructions">
+                <ol>
+                    <li>Open Telegram and search for <strong>@BotFather</strong></li>
+                    <li>Send the message: <code>/newbot</code></li>
+                    <li>Give it a name (anything you want, e.g., "AI Twin")</li>
+                    <li>Give it a username ending in "bot" (e.g., "yourname_twin_bot")</li>
+                    <li>BotFather will give you a <strong>token</strong> — copy it</li>
+                </ol>
+            </div>
+
+            <a href="https://t.me/BotFather" class="btn-external" target="_blank">Open @BotFather</a>
+
+            <div class="input-group">
+                <label for="telegram_token">Paste your bot token here:</label>
+                <input type="text" id="telegram_token" name="telegram_token"
+                       placeholder="123456789:AAH-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                       value="{{TELEGRAM_BOT_TOKEN}}">
+                <p class="hint">Looks like: 123456789:AAH-xxxxx...</p>
+            </div>
+
+            <button class="btn-next" onclick="nextStep(1)">Next →</button>
+        </div>
+
+        <!-- Step 2: Get User ID -->
+        <div class="step" id="panel-2">
+            <h2>Step 2: Get Your Telegram ID</h2>
+            <p>This locks the bot so only YOU can talk to it.</p>
+
+            <div class="instructions">
+                <ol>
+                    <li>Open Telegram and search for <strong>@userinfobot</strong></li>
+                    <li>Send any message (or tap Start)</li>
+                    <li>It replies with your user info — find the <strong>Id</strong> number</li>
+                    <li>Copy that number</li>
+                </ol>
+            </div>
+
+            <a href="https://t.me/userinfobot" class="btn-external" target="_blank">Open @userinfobot</a>
+
+            <div class="input-group">
+                <label for="user_id">Paste your user ID (numbers only):</label>
+                <input type="text" id="user_id" name="user_id"
+                       placeholder="123456789"
+                       value="{{ALLOWED_USER_ID}}">
+            </div>
+
+            <button class="btn-back" onclick="prevStep(2)">← Back</button>
+            <button class="btn-next" onclick="nextStep(2)">Next →</button>
+        </div>
+
+        <!-- Step 3: AI Brain -->
+        <div class="step" id="panel-3">
+            <h2>Step 3: Choose Your AI Brain</h2>
+            <p>Your twin needs an AI to think. You can use one or both.</p>
+
+            <div class="option-card">
+                <h3>Option A: OpenRouter (Recommended)</h3>
+                <p>Access to 300+ AI models. More reliable than Gemini. $5 free credit.</p>
+                <div class="instructions">
+                    <ol>
+                        <li>Go to <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a></li>
+                        <li>Sign in with Google or GitHub</li>
+                        <li>Click "Create Key"</li>
+                        <li>Copy the key (starts with <code>sk-or-v1-</code>)</li>
+                    </ol>
+                </div>
+                <a href="https://openrouter.ai/keys" class="btn-external" target="_blank">Get OpenRouter Key</a>
+                <div class="input-group">
+                    <label for="openrouter_key">Paste OpenRouter key (optional but recommended):</label>
+                    <input type="text" id="openrouter_key" name="openrouter_key"
+                           placeholder="sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                           value="{{OPENROUTER_API_KEY}}">
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Option B: DeepSeek (Recommended)</h3>
+                <p>Cheap, high quality, generous free tier. Very reliable.</p>
+                <div class="instructions">
+                    <ol>
+                        <li>Go to <a href="https://chat.deepseek.com/" target="_blank">chat.deepseek.com</a></li>
+                        <li>Sign up</li>
+                        <li>Go to Settings → API keys</li>
+                        <li>Create a key and copy it</li>
+                    </ol>
+                </div>
+                <a href="https://chat.deepseek.com/" class="btn-external" target="_blank">Get DeepSeek Key</a>
+                <div class="input-group">
+                    <label for="deepseek_key">Paste DeepSeek key (optional but recommended):</label>
+                    <input type="text" id="deepseek_key" name="deepseek_key"
+                           placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                           value="{{DEEPSEEK_API_KEY}}">
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Option C: Z.ai (Free)</h3>
+                <p>GLM models, free tier. Good as a backup.</p>
+                <div class="instructions">
+                    <ol>
+                        <li>Go to <a href="https://chat.z.ai/" target="_blank">chat.z.ai</a></li>
+                        <li>Sign up</li>
+                        <li>Go to Settings → API key</li>
+                        <li>Copy the key</li>
+                    </ol>
+                </div>
+                <a href="https://chat.z.ai/" class="btn-external" target="_blank">Get Z.ai Key</a>
+                <div class="input-group">
+                    <label for="zai_key">Paste Z.ai key (optional):</label>
+                    <input type="text" id="zai_key" name="zai_key"
+                           placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                           value="{{ZAI_API_KEY}}">
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Option D: Gemini (Fallback)</h3>
+                <p>Google's free AI. 250 requests/day. Gets rate-limited during peak hours.</p>
+                <div class="instructions">
+                    <ol>
+                        <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a></li>
+                        <li>Sign in with Google</li>
+                        <li>Click "Create API Key"</li>
+                        <li>Copy the key (starts with <code>AIza</code>)</li>
+                    </ol>
+                </div>
+                <a href="https://aistudio.google.com/apikey" class="btn-external" target="_blank">Get Gemini Key</a>
+                <div class="input-group">
+                    <label for="gemini_key">Paste Gemini key (optional):</label>
+                    <input type="text" id="gemini_key" name="gemini_key"
+                           placeholder="AIzaxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                           value="{{GEMINI_API_KEY}}">
+                </div>
+            </div>
+
+            <p class="note">You need at least one. The more you add, the more reliable your twin is — it rotates between them automatically.</p>
+
+            <button class="btn-back" onclick="prevStep(3)">← Back</button>
+            <button class="btn-next" onclick="nextStep(3)">Next →</button>
+        </div>
+
+        <!-- Step 4: Review and Submit -->
+        <div class="step" id="panel-4">
+            <h2>Step 4: Review and Finish</h2>
+            <p>Check your settings, then click "Finish Setup".</p>
+
+            <div class="review">
+                <div class="review-item">
+                    <strong>Telegram Bot Token:</strong>
+                    <span id="review_token">—</span>
+                </div>
+                <div class="review-item">
+                    <strong>Your Telegram ID:</strong>
+                    <span id="review_userid">—</span>
+                </div>
+                <div class="review-item">
+                    <strong>OpenRouter Key:</strong>
+                    <span id="review_or">—</span>
+                </div>
+                <div class="review-item">
+                    <strong>DeepSeek Key:</strong>
+                    <span id="review_deepseek">—</span>
+                </div>
+                <div class="review-item">
+                    <strong>Z.ai Key:</strong>
+                    <span id="review_zai">—</span>
+                </div>
+                <div class="review-item">
+                    <strong>Gemini Key:</strong>
+                    <span id="review_gemini">—</span>
+                </div>
+            </div>
+
+            <div class="final-steps">
+                <h3>After you click Finish:</h3>
+                <p>The installer will automatically:</p>
+                <ul>
+                    <li>Save your configuration</li>
+                    <li>Set up the bot to run 24/7</li>
+                    <li>Start your AI twin</li>
+                </ul>
+                <p><strong>You'll also need to do these two things on your phone:</strong></p>
+                <ol>
+                    <li><strong>Battery:</strong> Go to Android Settings → Apps → Termux → Battery → Set to "Unrestricted"</li>
+                    <li><strong>Auto-start:</strong> Install Termux:Boot from F-Droid (link below) and open it once</li>
+                </ol>
+                <a href="https://f-droid.org/packages/com.termux.boot/" class="btn-external" target="_blank">Get Termux:Boot from F-Droid</a>
+            </div>
+
+            <div id="error-message" class="error"></div>
+
+            <button class="btn-back" onclick="prevStep(4)">← Back</button>
+            <button class="btn-submit" onclick="submitForm()">Finish Setup ✓</button>
+        </div>
+
+        <!-- Success message (hidden until submitted) -->
+        <div class="step success-panel" id="panel-success">
+            <h2>✓ Setup Complete!</h2>
+            <p>Your AI twin is being configured. The installer will continue automatically.</p>
+            <p>You can close this page now.</p>
+        </div>
+    </div>
+
+    <script src="/wizard_assets/script.js"></script>
+</body>
+</html>

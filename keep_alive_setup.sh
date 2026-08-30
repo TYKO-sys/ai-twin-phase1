@@ -116,7 +116,9 @@ if tmux has-session -t twin 2>/dev/null; then
 fi
 
 # Start the bot in a new detached tmux session
-tmux new-session -d -s twin "cd ~/ai-twin && python twin_bot.py"
+# The 'while true' loop auto-restarts the bot if it crashes
+# (prevents tmux session from dying when Python exits)
+tmux new-session -d -s twin "while true; do cd ~/ai-twin && python twin_bot.py; echo 'Bot crashed, restarting in 5 seconds...'; sleep 5; done"
 
 echo "AI Twin started in background tmux session."
 echo ""
@@ -125,6 +127,7 @@ echo "  Attach to session: tmux attach -t twin"
 echo "  Stop the bot:     twin-stop"
 echo ""
 echo "The bot will keep running even if you close Termux."
+echo "If the bot crashes, it auto-restarts after 5 seconds."
 EOF
 chmod +x "$HOME/bin/twin-start"
 
@@ -242,24 +245,42 @@ cat > "$BOOT_DIR/start-twin.sh" << 'EOF'
 # Auto-start the AI twin when the phone boots.
 # This runs automatically if Termux:Boot is installed.
 
-# Wait a bit for network to come up
-sleep 15
+# Wait for network to come up (critical — bot needs internet)
+sleep 30
 
-# Acquire wakelock
+# Set PATH (Termux:Boot doesn't source .profile)
+export PATH="$HOME/bin:$PATH"
+
+# Acquire wakelock (prevents Android from killing the bot)
 termux-wake-lock 2>/dev/null
 
-# Start the bot in tmux
-twin-start
+# Start the bot using the full path (in case PATH isn't set)
+if [ -x "$HOME/bin/twin-start" ]; then
+    $HOME/bin/twin-start
+else
+    # Fallback: start directly
+    cd ~/ai-twin
+    tmux new-session -d -s twin "while true; do python twin_bot.py; echo 'Bot crashed, restarting in 5 seconds...'; sleep 5; done"
+fi
 EOF
 chmod +x "$BOOT_DIR/start-twin.sh"
 
 print_ok "Boot script created at ~/.termux/boot/start-twin.sh"
 echo ""
 echo -e "${YELLOW}To enable auto-start on phone reboot:${NC}"
+echo ""
 echo "1. Install Termux:Boot from F-Droid:"
 echo "   https://f-droid.org/packages/com.termux.boot/"
-echo "2. Open Termux:Boot once (just open and close it — that registers it)"
-echo "3. Done. Next time your phone restarts, the bot will auto-start."
+echo ""
+echo "2. Open Termux:Boot ONCE (just open and close it — that registers it with Android)"
+echo ""
+echo "3. IMPORTANT: Also whitelist Termux:Boot in battery settings:"
+echo "   Android Settings → Apps → Termux:Boot → Battery → Unrestricted"
+echo ""
+echo "4. Test it: restart your phone. Wait 60 seconds. The bot should start automatically."
+echo ""
+echo "If it doesn't start, the most common cause is Android killing Termux:Boot."
+echo "Make sure BOTH Termux AND Termux:Boot have battery set to 'Unrestricted'."
 echo ""
 
 # ------------------------------------------------------------

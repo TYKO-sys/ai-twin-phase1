@@ -279,14 +279,18 @@ class ContextManager:
     def build_context_for_response(self) -> str:
         """Assemble the context window the bot reads before replying.
 
-        Order matters: identity first (who they are), then recent days
-        (what's been happening), then this week's summary (big picture).
+        Uses the running profile (small, ~1500 tokens) instead of
+        sending 3 days of raw history (which was ~30K tokens).
+
+        Context now includes:
+        - Today's full log (needed for conversation flow)
+        - Yesterday's log only if today's is very short
+
+        The profile (managed by profile_manager.py) captures everything
+        important from older conversations. This is the right tradeoff:
+        the twin remembers who you are without burning tokens on raw history.
         """
         parts: List[str] = []
-
-        identity = self.get_identity()
-        if identity:
-            parts.append("# Who you are talking to\n\n" + identity)
 
         today = self.get_today_context()
         if today:
@@ -294,14 +298,10 @@ class ContextManager:
         else:
             parts.append("# Today so far\n\n_(first message of the day)_")
 
-        recent = self.get_recent_days(days=3)
-        # Strip today from recent to avoid duplication
-        if recent:
-            parts.append("# Last 3 days (excluding today)\n\n" + recent)
-
-        weekly = self.get_recent_weekly(weeks=2)
-        if weekly:
-            parts.append("# Recent weekly summaries\n\n" + weekly)
+            # If today is empty, include yesterday for continuity
+            recent = self.get_recent_days(days=1)
+            if recent:
+                parts.append("# Yesterday\n\n" + recent)
 
         return "\n\n---\n\n".join(parts)
 

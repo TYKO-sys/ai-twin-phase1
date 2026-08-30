@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>Set Up Your AI Twin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #0f1117;
+            color: #e0e0e0;
+            line-height: 1.6;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-top: 20px;
+        }
+
+        h1 {
+            font-size: 32px;
+            color: #7c5cfc;
+            margin-bottom: 8px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            color: #888;
+            font-size: 16px;
+        }
+
+        .step {
+            background: #1a1d27;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid #2a2d3a;
+            opacity: 0.4;
+            transition: all 0.3s ease;
+        }
+
+        .step.active {
+            opacity: 1;
+            border-color: #7c5cfc;
+            box-shadow: 0 4px 20px rgba(124, 92, 252, 0.1);
+        }
+
+        .step.completed {
+            opacity: 0.6;
+            border-color: #4caf50;
+        }
+
+        .step-number {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            background: #7c5cfc;
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 32px;
+            font-weight: 700;
+            margin-right: 12px;
+            font-size: 16px;
+        }
+
+        .step.completed .step-number {
+            background: #4caf50;
+        }
+
+        .step.completed .step-number::before {
+            content: "✓";
+        }
+
+        .step.completed .step-number-text {
+            display: none;
+        }
+
+        h2 {
+            display: inline;
+            font-size: 20px;
+            color: #fff;
+            vertical-align: middle;
+        }
+
+        .step-content {
+            margin-top: 16px;
+        }
+
+        .step-content p {
+            color: #bbb;
+            margin-bottom: 16px;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            text-decoration: none;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 12px;
+        }
+
+        .btn-primary {
+            background: #7c5cfc;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #6b4cec;
+        }
+
+        .btn-secondary {
+            background: #2a2d3a;
+            color: #7c5cfc;
+            border: 1px solid #3a3d4a;
+        }
+
+        .btn-secondary:hover {
+            background: #3a3d4a;
+        }
+
+        .command-box {
+            background: #12141c;
+            border: 1px solid #2a2d3a;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .command-text {
+            font-family: 'Courier New', monospace;
+            color: #7c5cfc;
+            font-size: 14px;
+            word-break: break-all;
+            flex: 1;
+            margin-right: 12px;
+        }
+
+        .copy-btn {
+            background: #2a2d3a;
+            color: #7c5cfc;
+            border: 1px solid #3a3d4a;
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .copy-btn:hover {
+            background: #3a3d4a;
+        }
+
+        .qr-placeholder {
+            text-align: center;
+            padding: 20px;
+            background: #12141c;
+            border-radius: 8px;
+            margin: 16px 0;
+        }
+
+        .note {
+            background: rgba(124, 92, 252, 0.1);
+            border-left: 3px solid #7c5cfc;
+            padding: 12px 16px;
+            border-radius: 0 8px 8px 0;
+            margin: 16px 0;
+            font-size: 14px;
+            color: #ccc;
+        }
+
+        .progress-bar {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding: 0 10px;
+        }
+
+        .progress-dot {
+            width: 10px;
+            height: 10px;
+            background: #333;
+            border-radius: 50%;
+            transition: all 0.3s;
+        }
+
+        .progress-dot.active {
+            background: #7c5cfc;
+            box-shadow: 0 0 10px #7c5cfc;
+        }
+
+        .progress-dot.completed {
+            background: #4caf50;
+        }
+
+        .done-screen {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .done-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .done-screen h2 {
+            font-size: 28px;
+            color: #4caf50;
+            margin-bottom: 16px;
+            display: block;
+        }
+
+        .done-screen p {
+            color: #ccc;
+            margin-bottom: 24px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .visible {
+            display: block;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #555;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Your AI Twin</h1>
+            <p class="subtitle">Set up in 5 minutes. No technical skills needed.</p>
+        </header>
+
+        <div class="progress-bar">
+            <div class="progress-dot active" id="dot-1"></div>
+            <div class="progress-dot" id="dot-2"></div>
+            <div class="progress-dot" id="dot-3"></div>
+            <div class="progress-dot" id="dot-4"></div>
+            <div class="progress-dot" id="dot-5"></div>
+        </div>
+
+        <!-- Step 1: Install Termux -->
+        <div class="step active" id="step-1">
+            <div>
+                <span class="step-number"><span class="step-number-text">1</span></span>
+                <h2>Install the App</h2>
+            </div>
+            <div class="step-content">
+                <p>First, you need to install one app on your phone. It's free and open source.</p>
+                <a href="https://f-droid.org/packages/com.termux/" class="btn btn-primary" target="_blank">
+                    Download the App
+                </a>
+                <p style="font-size: 14px; color: #666; margin-top: 8px;">
+                    This opens F-Droid (a safe app store). Tap "Download APK" then install.
+                </p>
+                <button class="btn btn-secondary" onclick="completeStep(1)">
+                    I've Installed It →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 2: Paste the command -->
+        <div class="step" id="step-2">
+            <div>
+                <span class="step-number"><span class="step-number-text">2</span></span>
+                <h2>Open It and Paste This</h2>
+            </div>
+            <div class="step-content">
+                <p>Open the app you just installed. You'll see a black screen. Copy and paste this exact text, then press Enter:</p>
+                <div class="command-box">
+                    <span class="command-text">bash <(curl -s https://raw.githubusercontent.com/TYKO-sys/ai-twin-phase1/main/install.sh)</span>
+                    <button class="copy-btn" onclick="copyCommand()">Copy</button>
+                </div>
+                <div class="note">
+                    Press and hold on the black screen to paste. Then press Enter.
+                </div>
+                <button class="btn btn-secondary" onclick="completeStep(2)">
+                    I've Pasted It →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 3: Follow the wizard -->
+        <div class="step" id="step-3">
+            <div>
+                <span class="step-number"><span class="step-number-text">3</span></span>
+                <h2>Follow the Setup Wizard</h2>
+            </div>
+            <div class="step-content">
+                <p>A setup page will open automatically in your browser. It will guide you through getting your AI keys.</p>
+                <div class="note">
+                    The wizard takes about 3 minutes. You'll need:<br>
+                    • A Telegram account<br>
+                    • A Google account (for free AI access)<br>
+                    That's it.
+                </div>
+                <button class="btn btn-secondary" onclick="completeStep(3)">
+                    I've Finished the Wizard →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 4: Allow auto-start -->
+        <div class="step" id="step-4">
+            <div>
+                <span class="step-number"><span class="step-number-text">4</span></span>
+                <h2>Allow Auto-Start (Optional)</h2>
+            </div>
+            <div class="step-content">
+                <p>To make sure your twin is always there when you restart your phone, install this helper app:</p>
+                <a href="https://f-droid.org/packages/com.termux.boot/" class="btn btn-primary" target="_blank">
+                    Get the Auto-Start Helper
+                </a>
+                <div class="note">
+                    After installing, just open it once and close it. That's all you need to do.
+                </div>
+                <p style="font-size: 14px; color: #666;">
+                    Also go to your phone's Settings → Apps → find the apps you just installed → Battery → set to "Unrestricted"
+                </p>
+                <button class="btn btn-secondary" onclick="completeStep(4)">
+                    Done →
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 5: Complete -->
+        <div class="step" id="step-5">
+            <div class="done-screen">
+                <div class="done-icon">✓</div>
+                <h2>You're Done!</h2>
+                <p>Your AI twin is now running. Open Telegram and find your bot. Send it a message to say hi.</p>
+                <p style="color: #888; font-size: 14px;">
+                    Your twin will check in with you every morning at 9am and every evening at 9pm. It remembers everything you tell it.
+                </p>
+            </div>
+        </div>
+
+        <footer>
+            <p>Questions? Just talk to your twin — it can help.</p>
+        </footer>
+    </div>
+
+    <script>
+        let currentStep = 1;
+
+        function completeStep(stepNum) {
+            // Mark current step as completed
+            const step = document.getElementById(`step-${stepNum}`);
+            step.classList.remove('active');
+            step.classList.add('completed');
+
+            // Update progress dots
+            document.getElementById(`dot-${stepNum}`).classList.remove('active');
+            document.getElementById(`dot-${stepNum}`).classList.add('completed');
+
+            // Show next step
+            const nextStep = stepNum + 1;
+            const nextStepEl = document.getElementById(`step-${nextStep}`);
+            if (nextStepEl) {
+                nextStepEl.classList.add('active');
+                document.getElementById(`dot-${nextStep}`).classList.add('active');
+                currentStep = nextStep;
+
+                // Scroll to next step
+                nextStepEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+
+        function copyCommand() {
+            const command = "bash <(curl -s https://raw.githubusercontent.com/TYKO-sys/ai-twin-phase1/main/install.sh)";
+
+            // Try modern clipboard API
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(command).then(() => {
+                    const btn = document.querySelector('.copy-btn');
+                    const originalText = btn.textContent;
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => {
+                        btn.textContent = originalText;
+                    }, 2000);
+                }).catch(() => {
+                    fallbackCopy(command);
+                });
+            } else {
+                fallbackCopy(command);
+            }
+        }
+
+        function fallbackCopy(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                const btn = document.querySelector('.copy-btn');
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            } catch (err) {
+                alert('Copy failed. Please copy manually: ' + text);
+            }
+            document.body.removeChild(textarea);
+        }
+    </script>
+</body>
+</html>

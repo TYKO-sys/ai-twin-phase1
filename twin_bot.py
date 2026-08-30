@@ -62,7 +62,10 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent))
 from context_manager import ContextManager
 from summarizer import run_weekly_summary
-from gemini_client import GeminiClient
+from profile_manager import ProfileManager
+from tools import GEMINI_TOOLS_CONFIG, execute_tool
+from multi_provider import MultiProviderClient
+from error_handler import translate_error, friendly_status
 
 # ---------------------------------------------------------------------- #
 # Configuration
@@ -83,11 +86,20 @@ MEMORY_DIR = os.environ.get("MEMORY_DIR",
 if not TELEGRAM_BOT_TOKEN:
     log.error("TELEGRAM_BOT_TOKEN not set. Copy .env.example to .env and fill it in.")
     sys.exit(1)
-if not GEMINI_API_KEY:
-    log.error("GEMINI_API_KEY not set. Copy .env.example to .env and fill it in.")
-    sys.exit(1)
 if not ALLOWED_USER_ID:
     log.error("ALLOWED_USER_ID not set. Add your Telegram user ID.")
+    sys.exit(1)
+
+# Check that at least one LLM key is set
+_llm_keys = [
+    os.environ.get("OPENROUTER_API_KEY", "").strip(),
+    os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+    os.environ.get("ZAI_API_KEY", "").strip(),
+    GEMINI_API_KEY,
+]
+if not any(_llm_keys):
+    log.error("No LLM API key found. Set at least one of: "
+              "OPENROUTER_API_KEY, DEEPSEEK_API_KEY, ZAI_API_KEY, GEMINI_API_KEY")
     sys.exit(1)
 
 # ---------------------------------------------------------------------- #
@@ -95,15 +107,17 @@ if not ALLOWED_USER_ID:
 # ---------------------------------------------------------------------- #
 
 cm = ContextManager(MEMORY_DIR)
+pm = ProfileManager()  # running personalization profile
 
-# Configure Gemini client (pure REST, no SDK, no Rust)
-# Model name is auto-verified on first call — falls back automatically
-# if Google deprecates a model name.
-GEMINI_MODEL_NAME = "gemini-3.7-flash"
-gemini_client = GeminiClient(
-    api_key=GEMINI_API_KEY,
-    model=GEMINI_MODEL_NAME,
-)
+# Initialize multi-provider LLM client
+# Automatically rotates through OpenRouter → DeepSeek → Z.ai → Gemini
+llm_client = MultiProviderClient()
+LLM_PROVIDER = "multi-provider"
+LLM_MODEL = llm_client.model
+USE_OPENROUTER = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+
+# Backward compatibility: keep gemini_client as an alias
+gemini_client = llm_client
 
 with open(Path(__file__).parent / "system_prompt.txt", "r",
           encoding="utf-8") as f:
@@ -124,10 +138,15 @@ forget_pending: str = ""
 _debug_mode: bool = False
 
 # Message processing lock — ensures only one message is processed at a time.
+# telebot processes sequentially by default, but we use this to send a
+# "I see your message, processing..." notification when messages queue up.
 _processing_lock = threading.Lock()
 _currently_processing = False
 
 # Initialize bot — plain text mode (no Markdown parsing).
+# Telegram's Markdown mode is fragile and breaks on any unmatched * or _.
+# Gemini's responses contain standard Markdown which Telegram can't parse.
+# Plain text is bulletproof. We lose bold/italic formatting but gain reliability.
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 
@@ -145,23 +164,20 @@ def _auth_user(message) -> bool:
 
 
 def _build_gemini_prompt(user_text: str) -> str:
-    """Build the full prompt sent to Gemini: context + user message."""
+    """Build the full prompt sent to Gemini: profile + context + user message."""
     global _last_context_files
     _last_context_files = []
 
+    # The running profile (small, ~1500 tokens) captures who the user is
+    # without needing 3 days of raw history
+    profile = pm.get_profile_for_context()
+
+    # Today's conversation log (for immediate context)
     context = cm.build_context_for_response()
 
-    daily_files = sorted((Path(MEMORY_DIR) / "daily").glob("*.md"),
-                         reverse=True)[:3]
-    weekly_files = sorted((Path(MEMORY_DIR) / "weekly").glob("*.md"),
-                          reverse=True)[:2]
-    ident_file = Path(MEMORY_DIR) / "identity" / "about_me.md"
-    _last_context_files = [f.name for f in daily_files]
-    _last_context_files += [f.name for f in weekly_files]
-    if ident_file.exists():
-        _last_context_files.append("about_me.md")
+    _last_context_files.append("profile.md")
 
-    prompt = f"""# CONTEXT FROM MEMORY
+    prompt = f"""{profile}# CONTEXT FROM TODAY'S LOG
 
 {context}
 
@@ -176,12 +192,27 @@ def _build_gemini_prompt(user_text: str) -> str:
 
 def _call_gemini(prompt: str, image_bytes: Optional[bytes] = None,
                   audio_bytes: Optional[bytes] = None) -> str:
-    """Call Gemini via REST. Retries are handled inside the client."""
-    return gemini_client.generate(
+    """Call LLM via multi-provider system.
+
+    The multi-provider client automatically tries OpenRouter → DeepSeek →
+    Z.ai → Gemini. If one is rate-limited or down, it tries the next.
+    No manual fallback logic needed here.
+    """
+    # For multimodal messages (images/audio), skip tools
+    if image_bytes or audio_bytes:
+        return llm_client.generate(
+            prompt=prompt,
+            system_instruction=SYSTEM_PROMPT,
+            image_bytes=image_bytes,
+        )
+
+    # Text-only — use tool-enabled generation
+    return llm_client.generate_with_tools(
         prompt=prompt,
         system_instruction=SYSTEM_PROMPT,
-        image_bytes=image_bytes,
-        audio_bytes=audio_bytes,
+        tools_config=GEMINI_TOOLS_CONFIG,
+        tool_executor=execute_tool,
+        max_iterations=5,
     )
 
 
@@ -200,7 +231,11 @@ def _footer() -> str:
 
 
 def _check_network_connectivity() -> bool:
-    """Quick check if we can reach external services."""
+    """Quick check if we can reach external services.
+
+    Tries to resolve api.telegram.org. If DNS works, network is up.
+    Used to detect AdGuard toggling, wifi switches, etc.
+    """
     import socket
     try:
         socket.gethostbyname("api.telegram.org")
@@ -210,7 +245,11 @@ def _check_network_connectivity() -> bool:
 
 
 def _wait_for_network(max_wait: int = 90) -> bool:
-    """Wait until network connectivity returns."""
+    """Wait until network connectivity returns. Returns True if back.
+
+    Polls every 3 seconds for up to max_wait seconds. Used when AdGuard
+    is toggled or wifi switches — those can take 15-30s to stabilize.
+    """
     for i in range(max_wait // 3):
         if _check_network_connectivity():
             return True
@@ -229,7 +268,14 @@ def _send_typing(chat_id: int) -> None:
 
 def _send_telegram_message(chat_id: int, text: str,
                            reply_to: int = None) -> bool:
-    """Send a single Telegram message with robust retry logic."""
+    """Send a single Telegram message with robust retry logic.
+
+    Telegram's API sometimes returns 502 Bad Gateway or times out,
+    especially during peak hours. We retry with exponential backoff:
+    2s, 4s, 8s, 16s, 32s — total ~1 minute of retries before giving up.
+
+    Returns True if sent, False if all retries failed.
+    """
     max_retries = 5
     for attempt in range(max_retries):
         try:
@@ -241,7 +287,7 @@ def _send_telegram_message(chat_id: int, text: str,
                 bot.send_message(chat_id, text, timeout=60)
             return True
         except Exception as e:
-            wait = 2 ** (attempt + 1)
+            wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds
             log.warning(
                 f"Telegram send failed (attempt {attempt+1}/{max_retries}): "
                 f"{type(e).__name__}: {e}. Retrying in {wait}s..."
@@ -254,13 +300,20 @@ def _send_telegram_message(chat_id: int, text: str,
 
 
 def _safe_reply(message, text: str) -> None:
-    """Reply, splitting long messages into chunks if needed."""
+    """Reply, splitting long messages into chunks if needed.
+
+    Telegram's message limit is 4096 chars. We split at 4000 to leave room.
+    We send chunks sequentially with a delay between them, and use
+    robust retry logic for each chunk. If a chunk is permanently lost,
+    we tell the user.
+    """
     chat_id = message.chat.id
     reply_to_id = message.message_id
     MAX = 4000
 
     if len(text) <= MAX:
         if not _send_telegram_message(chat_id, text, reply_to=reply_to_id):
+            # Even a short message failed after 5 retries. Tell the user.
             try:
                 bot.send_message(
                     chat_id,
@@ -272,6 +325,7 @@ def _safe_reply(message, text: str) -> None:
                 pass
         return
 
+    # Split on paragraph boundaries if possible
     parts = []
     while text:
         if len(text) <= MAX:
@@ -288,16 +342,21 @@ def _safe_reply(message, text: str) -> None:
     log.info(f"Splitting reply into {len(parts)} chunks "
              f"(total {sum(len(p) for p in parts)} chars)")
 
+    # Send each chunk sequentially. First chunk replies to the user's message.
+    # Subsequent chunks are standalone. Add a delay between successful sends
+    # so Telegram doesn't rate-limit us.
     lost_chunks = 0
     for i, part in enumerate(parts):
         reply_target = reply_to_id if i == 0 else None
         sent = _send_telegram_message(chat_id, part, reply_to=reply_target)
         if not sent:
             lost_chunks += 1
+        # Delay between chunks (only if this one succeeded and there's more)
         if i < len(parts) - 1 and sent:
             time.sleep(1.0)
 
     if lost_chunks > 0:
+        # Tell the user that part of the response was lost
         try:
             bot.send_message(
                 chat_id,
@@ -345,22 +404,21 @@ def cmd_help(message):
     if not _auth_user(message):
         return
     help_text = (
-        "Commands:\n\n"
-        "/start — intro message\n"
-        "/help — this list\n"
-        "/status — bot health + memory size\n"
-        "/search <query> — find anything in my memory\n"
-        "/forget <topic> — wipe mentions of a topic from memory\n"
-        "/identity — show what I know about you\n"
-        "/set_identity — replace identity (send new text after)\n"
-        "/ping — I'll check in with you\n"
-        "/morning — morning prompt (usually auto-triggered)\n"
-        "/evening — evening reflection (usually auto-triggered)\n"
-        "/weekly — generate weekly review now\n"
-        "/resend — regenerate my last response (if chunks were lost)\n"
-        "/debug — toggle memory footer on/off (default: off)\n\n"
-        "Just send me anything else. Text, voice, photos. "
-        "I'll figure it out."
+        "Here's what I can do:\n\n"
+        "Just talk to me — that's the main thing. Send text, voice, photos.\n\n"
+        "Commands:\n"
+        "/status — check if I'm running smoothly\n"
+        "/fix — get me back online if I'm having trouble\n"
+        "/profile — see what I know about you\n"
+        "/profile update — refresh my memory\n"
+        "/search <word> — find something I remember\n"
+        "/forget <topic> — let go of something\n"
+        "/ping — ask me for a check-in question\n"
+        "/morning — get today's focus point\n"
+        "/evening — start evening reflection\n"
+        "/weekly — generate weekly review\n"
+        "/resend — say that again\n\n"
+        "Or just send me anything. I'll figure it out."
     )
     _safe_reply(message, help_text)
 
@@ -379,15 +437,11 @@ def cmd_status(message):
     )
     mem_kb = mem_size / 1024
     status = (
-        f"Status: running\n"
+        f"I'm here and running smoothly.\n\n"
         f"Time: {_now()}\n"
-        f"Memory dir: {MEMORY_DIR}\n"
-        f"Daily logs: {daily_count}\n"
-        f"Weekly reviews: {weekly_count}\n"
-        f"Identity file: {'exists' if ident_exists else 'MISSING — set one'}\n"
-        f"Total memory: {mem_kb:.1f} KB\n"
-        f"Gemini model: {GEMINI_MODEL_NAME}\n"
-        f"Your Telegram ID: {message.from_user.id}"
+        f"Memory: {mem_kb:.0f} KB across {daily_count} days\n"
+        f"Your Telegram ID: {message.from_user.id}\n\n"
+        f"If something feels off, send /fix and I'll get myself back online."
     )
     _safe_reply(message, status)
 
@@ -413,6 +467,7 @@ def cmd_forget(message):
     if not query:
         _safe_reply(message, "Usage: /forget <topic>")
         return
+    # Two-step confirm
     if forget_pending != query:
         forget_pending = query
         _safe_reply(
@@ -465,12 +520,14 @@ def cmd_cancel(message):
         return
     identity_pending = False
     forget_pending = ""
+    # Reset evening state for this user
     evening_state.pop(message.from_user.id, None)
     _safe_reply(message, "Cancelled.")
 
 
 @bot.message_handler(commands=["morning"])
 def cmd_morning(message):
+    """Triggered by automation at 9am (or manually)."""
     if not _auth_user(message):
         return
     _send_typing(message.chat.id)
@@ -501,6 +558,7 @@ Under 5 lines total. Be direct.
 
 @bot.message_handler(commands=["evening"])
 def cmd_evening(message):
+    """Triggered by automation at 9pm (or manually)."""
     if not _auth_user(message):
         return
     cm.append_to_today("twin", "Evening check-in started.",
@@ -515,6 +573,7 @@ def cmd_evening(message):
 
 @bot.message_handler(commands=["weekly"])
 def cmd_weekly(message):
+    """Generate the weekly review now."""
     if not _auth_user(message):
         return
     _safe_reply(message, "Generating weekly review. This takes about 30 seconds...")
@@ -528,6 +587,7 @@ def cmd_weekly(message):
 
 @bot.message_handler(commands=["ping"])
 def cmd_ping(message):
+    """Manual check-in. Bot asks one question based on current state."""
     if not _auth_user(message):
         return
     _send_typing(message.chat.id)
@@ -548,6 +608,7 @@ move forward. Not three. One. The question that matters most right now.
 
 @bot.message_handler(commands=["debug"])
 def cmd_debug(message):
+    """Toggle debug mode (shows memory footer on each message)."""
     global _debug_mode
     if not _auth_user(message):
         return
@@ -563,12 +624,138 @@ def cmd_debug(message):
     )
 
 
+@bot.message_handler(commands=["checkboot"])
+def cmd_checkboot(message):
+    """Diagnose auto-start on boot issues — user-friendly, no technical jargon."""
+    if not _auth_user(message):
+        return
+
+    import subprocess
+    diagnostics = ["Boot Diagnostics:\n"]
+
+    # Check if Termux:Boot is installed (but don't call it that to the user)
+    try:
+        result = subprocess.run(
+            ["pm", "list", "packages", "com.termux.boot"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "com.termux.boot" in result.stdout:
+            diagnostics.append("✓ Auto-start app is installed")
+        else:
+            diagnostics.append("✗ Auto-start app is NOT installed")
+            diagnostics.append("  Install from: https://f-droid.org/packages/com.termux.boot/")
+    except Exception:
+        diagnostics.append("? Cannot check auto-start app status")
+
+    # Check boot script exists
+    boot_script = Path.home() / ".termux" / "boot" / "start-twin.sh"
+    if boot_script.exists():
+        diagnostics.append("✓ Startup script is configured")
+    else:
+        diagnostics.append("✗ Startup script is missing")
+        diagnostics.append("  Run the keep-alive setup to fix this")
+
+    # Check .bashrc auto-start
+    bashrc = Path.home() / ".bashrc"
+    if bashrc.exists() and "twin-start" in bashrc.read_text():
+        diagnostics.append("✓ Auto-start is enabled")
+    else:
+        diagnostics.append("✗ Auto-start is NOT enabled")
+
+    # Check .profile auto-start
+    profile = Path.home() / ".profile"
+    if profile.exists() and "twin-start" in profile.read_text():
+        diagnostics.append("✓ Auto-start is in profile")
+    else:
+        diagnostics.append("✗ Auto-start is NOT in profile")
+
+    diagnostics.append("\nIf auto-start fails after reboot:")
+    diagnostics.append("1. Open the auto-start app once (registers with Android)")
+    diagnostics.append("2. Set its battery to 'Unrestricted'")
+    diagnostics.append("3. Set this app's battery to 'Unrestricted'")
+    diagnostics.append("4. Reboot phone and wait 60 seconds")
+
+    _safe_reply(message, "\n".join(diagnostics))
+
+
+@bot.message_handler(commands=["fix"])
+def cmd_fix(message):
+    """One-tap recovery. Restarts the bot's connection and clears errors.
+
+    The user never sees what broke. They just see: "I'm back online."
+    """
+    if not _auth_user(message):
+        return
+
+    _safe_reply(message, "Give me a moment. I'm getting myself back online...")
+
+    # Clear all provider cooldowns
+    try:
+        for name, client in llm_client.providers:
+            if hasattr(client, "_mark_success"):
+                client._mark_success()
+            if hasattr(client, "_cooldown_until"):
+                client._cooldown_until = 0.0
+            if hasattr(client, "_consecutive_failures"):
+                client._consecutive_failures = 0
+        log.info("All provider cooldowns cleared by /fix")
+    except Exception as e:
+        log.error(f"Error clearing cooldowns: {e}")
+
+    # Also clear model_manager failures
+    try:
+        from model_manager import get_model_manager
+        get_model_manager().clear_failures()
+        log.info("Model manager failures cleared by /fix")
+    except Exception as e:
+        log.error(f"Error clearing model failures: {e}")
+
+    # Send a test message
+    _send_typing(message.chat.id)
+    test_reply = _call_gemini("Say 'I'm back online' in 5 words or less.")
+    if test_reply and not translate_error(test_reply).startswith("Something went wrong"):
+        _safe_reply(message, "I'm back online. Everything's working now.")
+    else:
+        _safe_reply(
+            message,
+            "I'm still having trouble. My AI services might be busy. "
+            "Try again in a minute, or send /status to check what's happening."
+        )
+
+
+@bot.message_handler(commands=["profile"])
+def cmd_profile(message):
+    """View or update the running personalization profile."""
+    if not _auth_user(message):
+        return
+
+    # Check if user wants to force an update
+    text = message.text.partition(" ")[2].strip().lower()
+    if text == "update":
+        _send_typing(message.chat.id)
+        _safe_reply(message, "Updating your profile based on today's conversations...")
+        try:
+            today = cm.get_today_context()
+            updated = pm.update_profile(llm_client, SYSTEM_PROMPT, today)
+            _safe_reply(message, f"Profile updated.\n\n{updated}")
+        except Exception as e:
+            _safe_reply(message, f"Profile update failed: {type(e).__name__}: {e}")
+        return
+
+    # Just show the current profile
+    profile = pm.get_profile()
+    _safe_reply(message, f"Here's what I know about you:\n\n{profile}")
+
+
 @bot.message_handler(commands=["resend"])
 def cmd_resend(message):
+    """Regenerate the last response (useful if chunks were lost)."""
     if not _auth_user(message):
         return
     _send_typing(message.chat.id)
+    # Get today's last user message
     today = cm.get_today_context()
+    # Find the last "## HH:MM — user" entry
     import re
     user_messages = re.findall(
         r"## \d{2}:\d{2} — user\n(.*?)(?=\n## |\n> \*\*|$)",
@@ -577,6 +764,7 @@ def cmd_resend(message):
     if not user_messages:
         _safe_reply(message, "I don't have a recent message to regenerate from.")
         return
+    # Skip the /resend command itself
     last_user_msg = None
     for msg in reversed(user_messages):
         if not msg.strip().startswith("/resend") and not msg.strip().startswith("[voice]") and not msg.strip().startswith("[photo]"):
@@ -585,7 +773,9 @@ def cmd_resend(message):
     if not last_user_msg:
         _safe_reply(message, "I don't have a recent message to regenerate from.")
         return
+    # Log the resend request
     cm.append_to_today("user", "/resend (regenerating last response)")
+    # Build prompt and call Gemini
     prompt = _build_gemini_prompt(last_user_msg)
     reply = _call_gemini(prompt) + _footer()
     cm.append_to_today("twin", reply, observation="regenerated via /resend")
@@ -603,6 +793,7 @@ def handle_text(message):
         return
     text = message.text or ""
 
+    # If we're awaiting identity replacement
     if identity_pending:
         cm.update_identity(text)
         identity_pending = False
@@ -612,6 +803,7 @@ def handle_text(message):
         )
         return
 
+    # Evening reflection flow
     user_id = message.from_user.id
     step = evening_state.get(user_id)
     if step:
@@ -641,10 +833,24 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
             reply = _call_gemini(prompt) + _footer()
             cm.append_to_today("twin", reply, observation="evening reflection")
             _safe_reply(message, reply)
+
+            # Now update the running profile based on today's conversations
+            # This happens silently in the background after the reflection
+            try:
+                log.info("Updating profile after evening reflection...")
+                pm.update_profile(llm_client, SYSTEM_PROMPT, today)
+                log.info("Profile updated successfully")
+            except Exception as e:
+                log.error(f"Profile update failed: {e}")
             return
 
+    # Regular message — log it
     cm.append_to_today("user", text)
 
+    # Check if we're already processing another message.
+    # telebot processes sequentially, so if the user sent multiple messages
+    # quickly, the earlier ones are still being processed. Let them know
+    # we see their message but need a moment.
     global _currently_processing
     if _currently_processing:
         try:
@@ -657,6 +863,7 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
         except Exception:
             pass
 
+    # Acquire lock and process
     _currently_processing = True
     try:
         _send_typing(message.chat.id)
@@ -674,12 +881,14 @@ def handle_voice(message):
         return
     _send_typing(message.chat.id)
     try:
+        # Download the voice file
         file_info = bot.get_file(message.voice.file_id)
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_info.file_path}"
         r = requests.get(file_url, timeout=30)
         r.raise_for_status()
         ogg_bytes = r.content
 
+        # Use Gemini to transcribe + respond (it can handle audio)
         full = gemini_client.generate(
             prompt=(
                 "Transcribe this voice memo. Then on a new line write "
@@ -717,6 +926,7 @@ def handle_photo(message):
         return
     _send_typing(message.chat.id)
     try:
+        # Get the largest photo
         photo = message.photo[-1]
         file_info = bot.get_file(photo.file_id)
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_info.file_path}"
@@ -745,18 +955,32 @@ def handle_photo(message):
 # ---------------------------------------------------------------------- #
 # Internal Scheduler (morning / evening / weekly pings)
 # ---------------------------------------------------------------------- #
+# The bot runs 24/7 in Termux, so it can trigger morning/evening/weekly
+# pings itself — no need for MacroDroid or cron to send commands.
+# MacroDroid is now optional backup only.
+#
+# The scheduler runs in a background thread and checks the time every
+# 60 seconds. When it's time for a ping, it sends the message directly
+# to the user via Telegram API (not as a /command to itself).
 
+# Track what we've already triggered today so we don't double-fire
 _last_morning_date = None
 _last_evening_date = None
 _last_weekly_date = None
 
-MORNING_HOUR = 9
-EVENING_HOUR = 21
-WEEKLY_DAY = 6
-WEEKLY_HOUR = 20
+# Scheduled times (24-hour format)
+MORNING_HOUR = 9   # 9:00 AM
+EVENING_HOUR = 21   # 9:00 PM
+WEEKLY_DAY = 6      # Sunday (0=Monday, 6=Sunday)
+WEEKLY_HOUR = 20    # 8:00 PM
 
 
 def _send_direct_message(text: str) -> bool:
+    """Send a message directly to the user (not as a reply).
+
+    Used by the scheduler to initiate morning/evening/weekly pings
+    without needing the user to send a command first.
+    """
     try:
         bot.send_message(ALLOWED_USER_ID, text, timeout=60)
         return True
@@ -766,14 +990,19 @@ def _send_direct_message(text: str) -> bool:
 
 
 def _trigger_morning():
+    """Send the morning ping directly."""
     global _last_morning_date
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
     _last_morning_date = today_str
     log.info("Triggering morning ping (internal scheduler)")
 
     today = cm.get_today_context()
     recent = cm.get_recent_days(days=2)
-    prompt = f"""It's morning. The user just woke up.
+    current_time_str = now.strftime("%I:%M %p on %A, %B %d, %Y")
+    prompt = f"""It is {current_time_str}. This is the morning ping.
+
+The time above is the ACTUAL current time. Do not confuse this with evening or bedtime. If it says AM, it is morning. If the user was sleeping, they are now waking up.
 
 Generate the morning message in the format described in your instructions:
 - One thing that matters most today, based on yesterday's context
@@ -781,7 +1010,7 @@ Generate the morning message in the format described in your instructions:
 - One sentence of context for why this is the thing
 - End with a yes/no or short-answer question
 
-Under 5 lines total. Be direct.
+Under 5 lines total. Be direct. Do NOT reference sleep, bedtime, or evening routines — it is morning.
 
 # RECENT CONTEXT
 
@@ -797,6 +1026,7 @@ Under 5 lines total. Be direct.
 
 
 def _trigger_evening():
+    """Start the evening reflection directly."""
     global _last_evening_date, evening_state
     today_str = datetime.now().strftime("%Y-%m-%d")
     _last_evening_date = today_str
@@ -812,6 +1042,7 @@ def _trigger_evening():
 
 
 def _trigger_weekly():
+    """Generate the weekly review directly."""
     global _last_weekly_date
     today_str = datetime.now().strftime("%Y-%m-%d")
     _last_weekly_date = today_str
@@ -823,10 +1054,12 @@ def _trigger_weekly():
     try:
         from summarizer import run_weekly_summary
         summary = run_weekly_summary(MEMORY_DIR, GEMINI_API_KEY)
+        # Send the summary (may be long, use _send_direct_message in chunks)
         MAX = 4000
         if len(summary) <= MAX:
             _send_direct_message(summary)
         else:
+            # Split into chunks
             parts = []
             while summary:
                 if len(summary) <= MAX:
@@ -848,6 +1081,12 @@ def _trigger_weekly():
 
 
 def _scheduler_loop():
+    """Background thread that checks the time every minute and triggers
+    morning/evening/weekly pings at the scheduled times.
+
+    Runs independently of Telegram polling — even if the network hiccups,
+    the scheduler keeps running.
+    """
     global _last_morning_date, _last_evening_date, _last_weekly_date
     log.info("Internal scheduler started "
              f"(morning={MORNING_HOUR}:00, evening={EVENING_HOUR}:00, "
@@ -858,14 +1097,17 @@ def _scheduler_loop():
             now = datetime.now()
             today_str = now.strftime("%Y-%m-%d")
 
+            # Morning ping (9:00 AM)
             if (now.hour == MORNING_HOUR and now.minute == 0
                     and _last_morning_date != today_str):
                 _trigger_morning()
 
+            # Evening ping (9:00 PM)
             if (now.hour == EVENING_HOUR and now.minute == 0
                     and _last_evening_date != today_str):
                 _trigger_evening()
 
+            # Weekly review (Sunday 8:00 PM)
             if (now.weekday() == WEEKLY_DAY
                     and now.hour == WEEKLY_HOUR and now.minute == 0
                     and _last_weekly_date != today_str):
@@ -874,6 +1116,7 @@ def _scheduler_loop():
         except Exception as e:
             log.error(f"Scheduler error: {e}")
 
+        # Check every 60 seconds
         time.sleep(60)
 
 
@@ -885,7 +1128,8 @@ def main() -> None:
     log.info("=" * 60)
     log.info("AI Twin starting up")
     log.info(f"  Memory dir: {MEMORY_DIR}")
-    log.info(f"  Gemini model: {GEMINI_MODEL_NAME}")
+    log.info(f"  LLM provider: {LLM_PROVIDER}")
+    log.info(f"  LLM model: {LLM_MODEL}")
     log.info(f"  Allowed user: {ALLOWED_USER_ID}")
     log.info(f"  Library: pyTelegramBotAPI (telebot)")
     log.info(f"  Scheduler: morning={MORNING_HOUR}am, "
@@ -894,27 +1138,38 @@ def main() -> None:
     log.info("=" * 60)
     log.info("Bot running. Press Ctrl+C to stop.")
 
+    # Start the internal scheduler in a background thread
     scheduler_thread = threading.Thread(target=_scheduler_loop,
                                         daemon=True)
     scheduler_thread.start()
     log.info("Scheduler thread started")
 
+    # Wrap polling in a retry loop. Android's network management kills
+    # long-polling connections periodically (ConnectionAbortedError 103).
+    # AdGuard toggling also kills all connections for 15-30 seconds.
+    # We wait for network to return before reconnecting.
     while True:
         try:
             bot.infinity_polling(
                 skip_pending=True,
                 timeout=60,
                 long_polling_timeout=30,
+                # Don't let telebot's internal error handler swallow crashes
+                # that we want to catch and retry
                 logger_level=None,
             )
         except KeyboardInterrupt:
             log.info("Bot stopped by user.")
             break
         except (ConnectionError, OSError, Exception) as e:
+            # ConnectionAbortedError, ConnectionResetError, network blips,
+            # AdGuard toggling, Android doze mode — all of these crash
+            # infinity_polling. Wait for network to return, then reconnect.
             log.warning(
                 f"Polling crashed: {type(e).__name__}: {e}. "
                 f"Checking network..."
             )
+            # Wait for network to come back (up to 90 seconds)
             if _wait_for_network(max_wait=90):
                 log.info("Network is back. Reconnecting in 5 seconds...")
                 time.sleep(5)
@@ -923,6 +1178,7 @@ def main() -> None:
                     f"Network still down after 90s. "
                     f"Will keep retrying every 30 seconds..."
                 )
+                # Keep trying indefinitely — the bot should never give up
                 while not _wait_for_network(max_wait=30):
                     log.warning("Still no network. Retrying in 30s...")
                 log.info("Network finally back. Reconnecting...")

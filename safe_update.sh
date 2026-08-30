@@ -149,17 +149,24 @@ CODE_FILES=(
     "twin_bot.py"
     "context_manager.py"
     "gemini_client.py"
+    "openrouter_client.py"
+    "multi_provider.py"
+    "model_manager.py"
+    "profile_manager.py"
+    "error_handler.py"
     "summarizer.py"
     "tools.py"
+    "wizard.py"
     "system_prompt.txt"
     "requirements.txt"
-    "setup.sh"
+    "models_config.json"
+    "SETUP_GUIDE.html"
+    "install.sh"
     "start.sh"
     "keep_alive_setup.sh"
-    "macrodroid_config.md"
     "README.md"
-    "MANUAL_STEPS.md"
-    "MONETIZATION.md"
+    "USER_GUIDE.md"
+    "TROUBLESHOOTING.md"
     ".env.example"
 )
 
@@ -167,6 +174,32 @@ for f in "${CODE_FILES[@]}"; do
     if [[ -f "$TEMP_DIR/ai-twin/$f" ]]; then
         cp "$TEMP_DIR/ai-twin/$f" "$AI_TWIN_DIR/$f"
         print_ok "Updated: $f"
+    fi
+done
+
+# Also copy the wizard_assets directory
+if [[ -d "$TEMP_DIR/ai-twin/wizard_assets" ]]; then
+    mkdir -p "$AI_TWIN_DIR/wizard_assets"
+    cp -r "$TEMP_DIR/ai-twin/wizard_assets/"* "$AI_TWIN_DIR/wizard_assets/"
+    print_ok "Updated: wizard_assets/"
+fi
+
+# ------------------------------------------------------------
+# 6.5. Remove old/deprecated files
+# ------------------------------------------------------------
+print_step "Step 6.5: Remove old files"
+OLD_FILES=(
+    "FRIEND_NOTE.md"
+    "FRIEND_NOTE_PHASE2.md"
+    "MONETIZATION.md"
+    "MANUAL_STEPS.md"
+    "macrodroid_config.md"
+    "setup.sh"
+)
+for f in "${OLD_FILES[@]}"; do
+    if [[ -f "$AI_TWIN_DIR/$f" ]]; then
+        rm -f "$AI_TWIN_DIR/$f"
+        print_ok "Removed old file: $f"
     fi
 done
 

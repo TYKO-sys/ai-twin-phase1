@@ -363,13 +363,37 @@ class GeminiClient:
                                 f"Check usage at aistudio.google.com/usage)"
                             )
                 elif resp.status_code >= 500:
-                    # Server error — retry with backoff
+                    # Server error (503 = overloaded, 500/502 = server error)
+                    # Google's Gemini API sometimes gets overloaded.
+                    # If we get repeated 503s, try switching to a fallback model
+                    # — different models run on different server clusters.
                     wait = 2 ** attempt
                     log.warning(
                         f"Gemini {resp.status_code}, retrying in {wait}s"
                     )
                     time.sleep(wait)
                     last_err = f"Server error {resp.status_code}"
+
+                    # After 3 failed attempts on this model, try a fallback
+                    if attempt == 2:
+                        self._tried_models.add(self.model)
+                        fallback = self._pick_fallback_model()
+                        if fallback:
+                            log.warning(
+                                f"Repeated 503s on {self.model}. "
+                                f"Switching to fallback: {fallback}"
+                            )
+                            self.model = fallback
+                            self._model_verified = True
+                            url = f"{GEMINI_BASE_URL}/{self.model}:generateContent"
+                            self._last_request_time = 0.0  # skip throttle
+                        else:
+                            return (
+                                f"(Google's Gemini servers are overloaded right "
+                                f"now (503 errors on all models). This is "
+                                f"temporary — usually resolves in 5-30 minutes. "
+                                f"Try again in a few minutes.)"
+                            )
                 else:
                     # Other client error (400, 401, 403) — don't retry
                     err_body = resp.text[:500]
@@ -596,11 +620,36 @@ class GeminiClient:
                     continue
 
                 elif resp.status_code >= 500:
+                    # Server error (503 = overloaded)
+                    # After 2 attempts, try switching to a fallback model
                     wait = 2 ** iteration
                     log.warning(
-                        f"Gemini {resp.status_code}, retrying in {wait}s"
+                        f"Gemini {resp.status_code} in tool loop, "
+                        f"retrying in {wait}s"
                     )
                     time.sleep(wait)
+
+                    # After 2 failed attempts, switch to fallback model
+                    if iteration >= 1:
+                        self._tried_models.add(self.model)
+                        fallback = self._pick_fallback_model()
+                        if fallback:
+                            log.warning(
+                                f"Repeated 503s in tool loop on {self.model}. "
+                                f"Switching to fallback: {fallback}"
+                            )
+                            self.model = fallback
+                            self._model_verified = True
+                            url = f"{GEMINI_BASE_URL}/{self.model}:generateContent"
+                            self._last_request_time = 0.0
+                        else:
+                            return (
+                                "(Google's Gemini servers are overloaded right now "
+                                "(503 errors on all models). This is temporary — "
+                                "usually resolves in 5-30 minutes. The tools ran "
+                                "but I couldn't generate a final response. "
+                                "Try again in a few minutes.)"
+                            )
                     continue
 
                 else:

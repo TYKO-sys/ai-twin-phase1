@@ -1,0 +1,15 @@
+# Python dependencies for the AI twin.
+# All three are PURE PYTHON — no Rust, no compiled extensions, no build chain.
+# Installs cleanly on Termux/Android with Python 3.12-3.14.
+#
+# NOTE: We do NOT use google-genai or google-generativeai because both
+# depend on google-auth, which depends on cryptography, which needs Rust
+# to build on Android. Instead, we call Gemini's REST API directly via
+# requests. See gemini_client.py.
+#
+# NOTE: We use pyTelegramBotAPI instead of python-telegram-bot for the
+# same reason — the latter pulls in cryptography too.
+
+pyTelegramBotAPI>=4.14.0
+python-dotenv>=1.0.0
+requests>=2.31.0

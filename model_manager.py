@@ -96,6 +96,7 @@ class ModelManager:
         """Try to fetch the latest model config from the remote source.
 
         Returns True if successful, False otherwise.
+        If it fails, the local config is used — this is normal and expected.
         """
         try:
             resp = requests.get(REMOTE_CONFIG_URL, timeout=15)
@@ -118,16 +119,21 @@ class ModelManager:
 
                     self._config = remote_config
                     self._last_refresh = time.time()
-                    log.info("Successfully fetched remote model config")
+                    log.info("Updated model config from remote source")
                     return True
                 else:
                     log.warning("Remote config has invalid structure, keeping local")
                     return False
+            elif resp.status_code == 404:
+                # Repo is private or file doesn't exist — use local config
+                # This is normal, not an error
+                log.info("Remote config not available (404) — using local config")
+                return False
             else:
-                log.warning(f"Remote config fetch failed: HTTP {resp.status_code}")
+                log.info(f"Remote config unavailable (HTTP {resp.status_code}) — using local")
                 return False
         except Exception as e:
-            log.warning(f"Could not fetch remote config: {e}")
+            log.info(f"Could not fetch remote config — using local: {e}")
             return False
 
     def _start_refresh_thread(self):

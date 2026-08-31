@@ -92,14 +92,18 @@ if not ALLOWED_USER_ID:
 
 # Check that at least one LLM key is set
 _llm_keys = [
+    os.environ.get("GROQ_API_KEY", "").strip(),
     os.environ.get("OPENROUTER_API_KEY", "").strip(),
-    os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+    os.environ.get("MISTRAL_API_KEY", "").strip(),
+    os.environ.get("CEREBRAS_API_KEY", "").strip(),
     os.environ.get("ZAI_API_KEY", "").strip(),
+    os.environ.get("DEEPSEEK_API_KEY", "").strip(),
     GEMINI_API_KEY,
 ]
 if not any(_llm_keys):
     log.error("No LLM API key found. Set at least one of: "
-              "OPENROUTER_API_KEY, DEEPSEEK_API_KEY, ZAI_API_KEY, GEMINI_API_KEY")
+              "GROQ_API_KEY, OPENROUTER_API_KEY, MISTRAL_API_KEY, "
+              "CEREBRAS_API_KEY, ZAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY")
     sys.exit(1)
 
 # ---------------------------------------------------------------------- #

@@ -325,9 +325,12 @@ class MultiProviderClient:
     def __init__(self):
         self.providers = []  # List of (name, client) tuples in priority order
 
-        # Build provider list based on available API keys
-        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        # Get all available API keys
+        groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        mistral_key = os.environ.get("MISTRAL_API_KEY", "").strip()
+        cerebras_key = os.environ.get("CEREBRAS_API_KEY", "").strip()
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         zai_key = os.environ.get("ZAI_API_KEY", "").strip()
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -335,33 +338,49 @@ class MultiProviderClient:
         if _mm:
             provider_order = _mm.get_provider_order()
         else:
-            provider_order = ["openrouter", "deepseek", "zai", "gemini"]
+            provider_order = ["groq", "openrouter", "mistral", "cerebras", "zai", "gemini"]
+
+        # Map provider names to their API keys
+        key_map = {
+            "groq": groq_key,
+            "openrouter": openrouter_key,
+            "mistral": mistral_key,
+            "cerebras": cerebras_key,
+            "zai": zai_key,
+            "deepseek": deepseek_key,
+            "gemini": gemini_key,
+        }
 
         # Build provider specs using model_manager for models and URLs
         provider_specs = []
 
         for p_name in provider_order:
-            if p_name == "openrouter" and openrouter_key:
-                p_config = _mm.get_provider_config("openrouter") if _mm else {}
-                base_url = p_config.get("base_url", "https://openrouter.ai/api/v1")
-                model = p_config.get("default_model", "openrouter/free")
-                provider_specs.append(("openrouter", openrouter_key, base_url, model))
+            p_key = key_map.get(p_name, "")
+            if not p_key:
+                continue
 
-            elif p_name == "deepseek" and deepseek_key:
-                p_config = _mm.get_provider_config("deepseek") if _mm else {}
-                base_url = p_config.get("base_url", "https://api.deepseek.com/v1")
-                model = p_config.get("default_model", "deepseek-chat")
-                provider_specs.append(("deepseek", deepseek_key, base_url, model))
-
-            elif p_name == "zai" and zai_key:
-                p_config = _mm.get_provider_config("zai") if _mm else {}
-                base_url = p_config.get("base_url", "https://open.bigmodel.cn/api/paas/v4")
-                model = p_config.get("default_model", "glm-4-flash")
-                provider_specs.append(("zai", zai_key, base_url, model))
-
-            elif p_name == "gemini" and gemini_key:
+            if p_name == "gemini":
                 # Gemini uses its own client, added separately below
-                pass
+                continue
+
+            p_config = _mm.get_provider_config(p_name) if _mm else {}
+
+            # Use known defaults if model_manager doesn't have the config
+            defaults = {
+                "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+                "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free"),
+                "mistral": ("https://api.mistral.ai/v1", "mistral-small-latest"),
+                "cerebras": ("https://api.cerebras.ai/v1", "llama3.1-8b-8192"),
+                "zai": ("https://api.z.ai/api/paas/v4", "glm-4-flash"),
+                "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+            }
+
+            default_url, default_model = defaults.get(p_name, ("", ""))
+            base_url = p_config.get("base_url", default_url)
+            model = p_config.get("default_model", default_model)
+
+            if base_url and model:
+                provider_specs.append((p_name, p_key, base_url, model))
 
         # Create OpenAI-compatible clients
         for name, key, url, model in provider_specs:

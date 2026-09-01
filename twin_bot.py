@@ -873,6 +873,10 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
     # Regular message — log it
     cm.append_to_today("user", text)
 
+    # Track when the user last messaged (for proactive messaging)
+    global _last_user_message_time
+    _last_user_message_time = time.time()
+
     # Check if we're already processing another message.
     # telebot processes sequentially, so if the user sent multiple messages
     # quickly, the earlier ones are still being processed. Let them know
@@ -1008,6 +1012,15 @@ _kb_message_counter = 0  # messages since last KB update
 _KB_UPDATE_INTERVAL = 5  # update KB every N messages
 _KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
 
+# Proactive messaging system
+_last_proactive_check = 0.0
+_last_user_message_time = time.time()  # when the user last messaged
+_last_proactive_message_time = 0.0  # when we last sent a proactive message
+_PROACTIVE_CHECK_INTERVAL = 900  # check every 15 minutes (900 seconds)
+_PROACTIVE_MIN_GAP = 3600  # at least 1 hour between proactive messages
+_PROACTIVE_QUIET_HOURS = (23, 7)  # don't message between 11pm and 7am
+_PROACTIVE_SILENCE_THRESHOLD = 14400  # reach out after 4 hours of silence
+
 # Scheduled times (24-hour format)
 MORNING_HOUR = 9   # 9:00 AM
 EVENING_HOUR = 21   # 9:00 PM
@@ -1067,6 +1080,112 @@ def _trigger_incremental_kb_update():
 
     # Run in background thread
     threading.Thread(target=update_in_background, daemon=True).start()
+
+
+def _proactive_messaging_loop():
+    """Background thread that proactively reaches out to the user.
+
+    This is what makes the twin feel alive. Instead of waiting for the user
+    to message, the twin reaches out when:
+
+    1. An appointment is coming up soon (within the next hour — needs a "leave now" reminder)
+    2. A task marked as urgent/overdue hasn't been mentioned recently
+    3. The user has been silent for 4+ hours and there are open threads
+    4. Something time-sensitive is approaching (deadline within 24 hours)
+
+    The twin uses the LLM to generate a natural, context-aware message.
+    Not "how are you" — something specific based on what's actually happening
+    in the user's life.
+
+    Rules:
+    - Never message during quiet hours (11pm to 7am)
+    - At least 1 hour between proactive messages
+    - Don't message if the user just talked (within 30 minutes)
+    - Don't repeat the same message twice
+    - Messages should be specific, not generic
+    """
+    log.info("Proactive messaging system started")
+
+    while True:
+        time.sleep(60)  # Check once per minute
+
+        try:
+            now = datetime.now()
+            now_ts = time.time()
+
+            # Quiet hours check — don't message between 11pm and 7am
+            if now.hour >= _PROACTIVE_QUIET_HOURS[0] or now.hour < _PROACTIVE_QUIET_HOURS[1]:
+                continue
+
+            # Don't message if the user just talked (within 30 minutes)
+            if now_ts - _last_user_message_time < 1800:
+                continue
+
+            # Don't message if we just sent a proactive message (within 1 hour)
+            if now_ts - _last_proactive_message_time < _PROACTIVE_MIN_GAP:
+                continue
+
+            # Get the knowledge base and analyze what needs attention
+            knowledge = kb.get_all_knowledge()
+            if not knowledge or len(knowledge) < 100:
+                continue  # Knowledge base not populated yet
+
+            # Ask the LLM: "Is there anything worth reaching out about right now?"
+            prompt = f"""{knowledge}
+
+---
+
+# CURRENT TIME
+It is {now.strftime("%A, %B %d, %Y at %I:%M %p")}.
+
+# YOUR TASK
+You are the AI twin. Look at what you know about this person and the current time.
+
+Ask yourself: Is there anything worth reaching out about RIGHT NOW?
+
+Consider:
+1. Is there an appointment or deadline coming up within the next 2 hours? (They need a heads-up)
+2. Is there an overdue task that hasn't been mentioned recently? (Gentle nudge)
+3. Has it been more than 4 hours since they last talked to you, and there are open threads? (Check in)
+4. Is there something time-sensitive that needs attention today?
+
+If there IS something worth saying, write a SHORT, NATURAL message to the user.
+- Be specific. Reference actual tasks, appointments, or situations.
+- Be brief. 1-3 sentences max.
+- Be natural. Like a friend texting you, not a notification.
+- Don't say "how are you" or anything generic.
+- If it's a reminder, be practical: "Your appointment is in 45 minutes. Time to head out."
+- If it's a nudge: "You mentioned calling about the surgeon notes today. Want me to draft what to say?"
+- If it's a check-in after silence: "Haven't heard from you in a bit. The Labcorp ride still needs rescheduling. Need help with that?"
+
+If there is NOTHING worth reaching out about (no urgent items, no overdue tasks, no time-sensitive things, user hasn't been silent long enough), respond with exactly:
+
+NO_PROACTIVE_MESSAGE
+
+Do not add anything after NO_PROACTIVE_MESSAGE. Do not explain why. Just output that exact string."""
+
+            response = llm_client.generate(
+                prompt=prompt,
+                system_instruction="You are deciding whether to proactively reach out to someone you know well. Only reach out if there's something genuinely worth saying. Be specific and natural.",
+            )
+
+            if response and "NO_PROACTIVE_MESSAGE" not in response and len(response) > 10:
+                # This is a real proactive message — send it
+                _safe_reply_to_user(response)
+                _last_proactive_message_time = time.time()
+                log.info(f"Sent proactive message: {response[:100]}...")
+
+        except Exception as e:
+            log.error(f"Proactive messaging error: {e}")
+
+
+def _safe_reply_to_user(text: str):
+    """Send a message to the user as a proactive check-in."""
+    try:
+        _send_telegram_message(ALLOWED_USER_ID, text)
+        cm.append_to_today("twin", text, observation="proactive message")
+    except Exception as e:
+        log.error(f"Proactive message send failed: {e}")
 
 
 def _trigger_morning():
@@ -1223,6 +1342,12 @@ def main() -> None:
                                         daemon=True)
     scheduler_thread.start()
     log.info("Scheduler thread started")
+
+    # Start the proactive messaging system in a background thread
+    proactive_thread = threading.Thread(target=_proactive_messaging_loop,
+                                         daemon=True)
+    proactive_thread.start()
+    log.info("Proactive messaging thread started")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

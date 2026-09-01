@@ -155,6 +155,7 @@ CODE_FILES=(
     "knowledge_base.py"
     "profile_manager.py"
     "error_handler.py"
+    "markdown_to_telegram.py"
     "summarizer.py"
     "tools.py"
     "wizard.py"

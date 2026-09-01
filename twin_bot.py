@@ -67,6 +67,7 @@ from knowledge_base import get_knowledge_base
 from tools import GEMINI_TOOLS_CONFIG, execute_tool
 from multi_provider import MultiProviderClient
 from error_handler import translate_error, friendly_status
+from markdown_to_telegram import convert_markdown_to_telegram_html, split_for_telegram
 
 # ---------------------------------------------------------------------- #
 # Configuration
@@ -149,11 +150,10 @@ _debug_mode: bool = False
 _processing_lock = threading.Lock()
 _currently_processing = False
 
-# Initialize bot — plain text mode (no Markdown parsing).
-# Telegram's Markdown mode is fragile and breaks on any unmatched * or _.
-# Gemini's responses contain standard Markdown which Telegram can't parse.
-# Plain text is bulletproof. We lose bold/italic formatting but gain reliability.
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+# Initialize bot — HTML mode for rich text formatting.
+# All LLM responses (which are Markdown) get converted to Telegram HTML
+# before sending. This gives the user bold, italic, code blocks, links, etc.
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------- #
@@ -281,21 +281,31 @@ def _send_telegram_message(chat_id: int, text: str,
                            reply_to: int = None) -> bool:
     """Send a single Telegram message with robust retry logic.
 
+    Converts Markdown to Telegram HTML before sending for rich text display.
+    Falls back to plain text if HTML conversion fails.
+
     Telegram's API sometimes returns 502 Bad Gateway or times out,
     especially during peak hours. We retry with exponential backoff:
     2s, 4s, 8s, 16s, 32s — total ~1 minute of retries before giving up.
 
     Returns True if sent, False if all retries failed.
     """
+    # Convert Markdown to Telegram HTML
+    try:
+        html_text = convert_markdown_to_telegram_html(text)
+    except Exception:
+        # If conversion fails, escape HTML and send as-is
+        html_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     max_retries = 5
     for attempt in range(max_retries):
         try:
             if reply_to:
-                bot.send_message(chat_id, text,
+                bot.send_message(chat_id, html_text,
                                  reply_to_message_id=reply_to,
                                  timeout=60)
             else:
-                bot.send_message(chat_id, text, timeout=60)
+                bot.send_message(chat_id, html_text, timeout=60)
             return True
         except Exception as e:
             wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds

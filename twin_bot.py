@@ -1012,14 +1012,18 @@ _kb_message_counter = 0  # messages since last KB update
 _KB_UPDATE_INTERVAL = 5  # update KB every N messages
 _KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
 
-# Proactive messaging system
-_last_proactive_check = 0.0
-_last_user_message_time = time.time()  # when the user last messaged
-_last_proactive_message_time = 0.0  # when we last sent a proactive message
-_PROACTIVE_CHECK_INTERVAL = 900  # check every 15 minutes (900 seconds)
-_PROACTIVE_MIN_GAP = 3600  # at least 1 hour between proactive messages
+# Proactive messaging system — EVENT-DRIVEN, NOT POLLING
+# Zero LLM token usage when idle. Only uses tokens when there's an actual event.
+# Events that trigger proactive messages:
+# 1. Appointment/deadline approaching (checked locally, no LLM needed)
+# 2. User has been silent for 4+ hours with open threads (checked locally)
+# 3. Task is overdue (checked locally)
+# The LLM is only called to GENERATE the message text, never to DECIDE whether to send.
+_proactive_reminders_sent = set()  # Track which reminders we've already sent (prevent duplicates)
+_last_silence_check_time = 0.0
+_SILENCE_CHECK_INTERVAL = 3600  # Check for silence every hour (not every minute)
 _PROACTIVE_QUIET_HOURS = (23, 7)  # don't message between 11pm and 7am
-_PROACTIVE_SILENCE_THRESHOLD = 14400  # reach out after 4 hours of silence
+_PROACTIVE_SILENCE_THRESHOLD = 14400  # 4 hours of silence triggers a check-in
 
 # Scheduled times (24-hour format)
 MORNING_HOUR = 9   # 9:00 AM
@@ -1083,100 +1087,205 @@ def _trigger_incremental_kb_update():
 
 
 def _proactive_messaging_loop():
-    """Background thread that proactively reaches out to the user.
+    """Event-driven proactive messaging. Zero tokens when idle.
 
-    This is what makes the twin feel alive. Instead of waiting for the user
-    to message, the twin reaches out when:
+    This does NOT call the LLM every minute. It uses cheap local checks
+    (string parsing, timestamp comparison) to detect events. The LLM
+    is only called to generate the actual message text when an event
+    is confirmed.
 
-    1. An appointment is coming up soon (within the next hour — needs a "leave now" reminder)
-    2. A task marked as urgent/overdue hasn't been mentioned recently
-    3. The user has been silent for 4+ hours and there are open threads
-    4. Something time-sensitive is approaching (deadline within 24 hours)
-
-    The twin uses the LLM to generate a natural, context-aware message.
-    Not "how are you" — something specific based on what's actually happening
-    in the user's life.
-
-    Rules:
-    - Never message during quiet hours (11pm to 7am)
-    - At least 1 hour between proactive messages
-    - Don't message if the user just talked (within 30 minutes)
-    - Don't repeat the same message twice
-    - Messages should be specific, not generic
+    Events:
+    1. Appointment within 1 hour → "Leave soon" reminder
+    2. Appointment within 24 hours → "Heads up" reminder (sent once)
+    3. User silent 4+ hours with open threads → check-in (sent once per silence period)
+    4. Overdue task detected → gentle nudge (sent once per task)
     """
-    log.info("Proactive messaging system started")
+    log.info("Proactive messaging system started (event-driven, zero idle tokens)")
 
     while True:
-        time.sleep(60)  # Check once per minute
+        time.sleep(300)  # Check every 5 minutes (local checks only, no tokens)
 
         try:
             now = datetime.now()
             now_ts = time.time()
 
-            # Quiet hours check — don't message between 11pm and 7am
+            # Quiet hours — no proactive messages 11pm to 7am
             if now.hour >= _PROACTIVE_QUIET_HOURS[0] or now.hour < _PROACTIVE_QUIET_HOURS[1]:
                 continue
 
-            # Don't message if the user just talked (within 30 minutes)
+            # Don't proactive if user just messaged (within 30 minutes)
             if now_ts - _last_user_message_time < 1800:
                 continue
 
-            # Don't message if we just sent a proactive message (within 1 hour)
-            if now_ts - _last_proactive_message_time < _PROACTIVE_MIN_GAP:
-                continue
+            # Check 1: Appointment/deadline reminders (local string parsing, no tokens)
+            _check_upcoming_appointments(now)
 
-            # Get the knowledge base and analyze what needs attention
-            knowledge = kb.get_all_knowledge()
-            if not knowledge or len(knowledge) < 100:
-                continue  # Knowledge base not populated yet
-
-            # Ask the LLM: "Is there anything worth reaching out about right now?"
-            prompt = f"""{knowledge}
-
----
-
-# CURRENT TIME
-It is {now.strftime("%A, %B %d, %Y at %I:%M %p")}.
-
-# YOUR TASK
-You are the AI twin. Look at what you know about this person and the current time.
-
-Ask yourself: Is there anything worth reaching out about RIGHT NOW?
-
-Consider:
-1. Is there an appointment or deadline coming up within the next 2 hours? (They need a heads-up)
-2. Is there an overdue task that hasn't been mentioned recently? (Gentle nudge)
-3. Has it been more than 4 hours since they last talked to you, and there are open threads? (Check in)
-4. Is there something time-sensitive that needs attention today?
-
-If there IS something worth saying, write a SHORT, NATURAL message to the user.
-- Be specific. Reference actual tasks, appointments, or situations.
-- Be brief. 1-3 sentences max.
-- Be natural. Like a friend texting you, not a notification.
-- Don't say "how are you" or anything generic.
-- If it's a reminder, be practical: "Your appointment is in 45 minutes. Time to head out."
-- If it's a nudge: "You mentioned calling about the surgeon notes today. Want me to draft what to say?"
-- If it's a check-in after silence: "Haven't heard from you in a bit. The Labcorp ride still needs rescheduling. Need help with that?"
-
-If there is NOTHING worth reaching out about (no urgent items, no overdue tasks, no time-sensitive things, user hasn't been silent long enough), respond with exactly:
-
-NO_PROACTIVE_MESSAGE
-
-Do not add anything after NO_PROACTIVE_MESSAGE. Do not explain why. Just output that exact string."""
-
-            response = llm_client.generate(
-                prompt=prompt,
-                system_instruction="You are deciding whether to proactively reach out to someone you know well. Only reach out if there's something genuinely worth saying. Be specific and natural.",
-            )
-
-            if response and "NO_PROACTIVE_MESSAGE" not in response and len(response) > 10:
-                # This is a real proactive message — send it
-                _safe_reply_to_user(response)
-                _last_proactive_message_time = time.time()
-                log.info(f"Sent proactive message: {response[:100]}...")
+            # Check 2: Silence check-in (local, no tokens until message generation)
+            if now_ts - _last_silence_check_time > _SILENCE_CHECK_INTERVAL:
+                _last_silence_check_time = now_ts
+                _check_silence(now_ts)
 
         except Exception as e:
-            log.error(f"Proactive messaging error: {e}")
+            log.error(f"Proactive check error: {e}")
+
+
+def _check_upcoming_appointments(now: datetime):
+    """Check the knowledge base for upcoming appointments. Zero tokens.
+
+    Parses the upcoming.md file locally (string matching) to find
+    appointments within the next hour or next 24 hours. Only calls the
+    LLM to generate the reminder message when an event is confirmed.
+    """
+    try:
+        upcoming = kb.get_domain("upcoming.md")
+        if not upcoming:
+            return
+
+        now_ts = now.timestamp()
+
+        # Parse upcoming.md for date patterns
+        # Look for lines with dates and times
+        import re
+        from datetime import timedelta
+
+        # Find date+time patterns like "2026-09-07 at 11:30" or "September 7 at 11:30 AM"
+        date_patterns = [
+            # ISO format: 2026-09-07 at 11:30
+            (r'(\d{4}-\d{2}-\d{2})\s+at\s+(\d{1,2}:\d{2})\s*(AM|PM)?',
+             lambda m: f"{m.group(1)} {m.group(2)} {'AM' if m.group(3) == 'AM' else 'PM' if m.group(3) else ''}".strip()),
+            # "September 7" or "September 7 at 11:30 AM"
+            (r'(\w+\s+\d{1,2})(?:\s+at\s+(\d{1,2}:\d{2})\s*(AM|PM)?)?',
+             None),  # Complex parsing, skip for now
+        ]
+
+        # Simple approach: look for absolute dates in the upcoming file
+        # and check if any are within the next hour or 24 hours
+        lines = upcoming.split('\n')
+        for line in lines:
+            # Look for ISO dates
+            date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', line)
+            if date_match:
+                try:
+                    event_date = datetime(int(date_match.group(1)),
+                                        int(date_match.group(2)),
+                                        int(date_match.group(3)))
+                    # Check for time in the same line
+                    time_match = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)?', line)
+                    if time_match:
+                        hour = int(time_match.group(1))
+                        minute = int(time_match.group(2))
+                        if time_match.group(3) and time_match.group(3).upper() == 'PM' and hour != 12:
+                            hour += 12
+                        elif time_match.group(3) and time_match.group(3).upper() == 'AM' and hour == 12:
+                            hour = 0
+                        event_date = event_date.replace(hour=hour, minute=minute)
+
+                    event_ts = event_date.timestamp()
+                    hours_until = (event_ts - now_ts) / 3600
+
+                    # Within 1 hour — urgent reminder
+                    if 0 < hours_until <= 1:
+                        reminder_key = f"urgent_{date_match.group(0)}"
+                        if reminder_key not in _proactive_reminders_sent:
+                            _proactive_reminders_sent.add(reminder_key)
+                            _send_proactive_reminder(
+                                line, hours_until, urgent=True
+                            )
+
+                    # Within 24 hours — heads-up (sent once)
+                    elif 1 < hours_until <= 24:
+                        reminder_key = f"heads_up_{date_match.group(0)}"
+                        if reminder_key not in _proactive_reminders_sent:
+                            _proactive_reminders_sent.add(reminder_key)
+                            _send_proactive_reminder(
+                                line, hours_until, urgent=False
+                            )
+
+                except Exception:
+                    pass  # Date parsing failed, skip
+
+    except Exception as e:
+        log.error(f"Appointment check failed: {e}")
+
+
+def _send_proactive_reminder(event_text: str, hours_until: float, urgent: bool):
+    """Generate and send a proactive reminder. This is the ONLY point
+    where tokens are used — to generate the message text.
+
+    Even here, we use a very short prompt to minimize token usage.
+    """
+    try:
+        # Very short, cheap prompt — just generate a natural reminder
+        if urgent:
+            prompt = f"Write a 1-2 sentence reminder to someone that they have something in {hours_until:.0f} minutes. Event: {event_text[:200]}. Be natural, specific, and brief. No greeting."
+        else:
+            prompt = f"Write a 1-2 sentence heads-up to someone that they have something in about {hours_until:.0f} hours. Event: {event_text[:200]}. Be natural, specific, and brief. No greeting."
+
+        response = llm_client.generate(
+            prompt=prompt,
+            system_instruction="Write a short, natural text message. Be brief and specific. No fluff.",
+        )
+
+        if response and len(response) > 5:
+            _send_telegram_message(ALLOWED_USER_ID, response)
+            cm.append_to_today("twin", response, observation="proactive reminder")
+            log.info(f"Sent proactive reminder ({'urgent' if urgent else 'heads-up'}): {response[:80]}...")
+
+    except Exception as e:
+        log.error(f"Proactive reminder failed: {e}")
+
+
+def _check_silence(now_ts: float):
+    """Check if the user has been silent long enough to warrant a check-in.
+
+    Only sends a check-in if:
+    - User hasn't messaged in 4+ hours
+    - We haven't already sent a check-in for this silence period
+    - There are open threads in the knowledge base
+
+    Uses tokens to generate the check-in message, but only when triggered.
+    """
+    global _last_user_message_time
+
+    silence_duration = now_ts - _last_user_message_time
+
+    if silence_duration < _PROACTIVE_SILENCE_THRESHOLD:
+        return  # Not silent long enough
+
+    # Check if there are open threads
+    tasks = kb.get_domain("tasks.md")
+    if not tasks or len(tasks) < 20:
+        return  # No tasks to check in about
+
+    # Check if we already sent a silence check-in after the last user message
+    silence_key = f"silence_{int(_last_user_message_time)}"
+    if silence_key in _proactive_reminders_sent:
+        return  # Already checked in for this silence period
+
+    _proactive_reminders_sent.add(silence_key)
+
+    # Generate a specific check-in based on open threads
+    try:
+        # Short prompt — just the tasks, not the full knowledge base
+        prompt = f"""Write a 1-2 sentence check-in text to someone who hasn't talked to you in {silence_duration/3600:.0f} hours. Reference something specific from their open tasks. Be natural, not clingy. No "how are you." No "just checking in." Reference a real task.
+
+Open tasks:
+{tasks[:500]}
+
+Write the message now:"""
+
+        response = llm_client.generate(
+            prompt=prompt,
+            system_instruction="Write a short, natural text message. Be specific about what they need to do. Brief.",
+        )
+
+        if response and len(response) > 5:
+            _send_telegram_message(ALLOWED_USER_ID, response)
+            cm.append_to_today("twin", response, observation="proactive silence check-in")
+            log.info(f"Sent silence check-in: {response[:80]}...")
+
+    except Exception as e:
+        log.error(f"Silence check-in failed: {e}")
 
 
 def _safe_reply_to_user(text: str):

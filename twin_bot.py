@@ -897,6 +897,14 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
         reply = _call_gemini(prompt) + _footer()
         cm.append_to_today("twin", reply)
         _safe_reply(message, reply)
+
+        # Auto-update knowledge base after conversations (not just evening)
+        # This runs in a background thread so it doesn't delay the response
+        # Only updates if there are enough new messages since last update
+        try:
+            _trigger_incremental_kb_update()
+        except Exception as e:
+            log.error(f"Incremental KB update trigger failed: {e}")
     finally:
         _currently_processing = False
 
@@ -994,6 +1002,12 @@ _last_morning_date = None
 _last_evening_date = None
 _last_weekly_date = None
 
+# Track incremental knowledge base updates
+_last_kb_update_time = 0.0  # timestamp of last KB update
+_kb_message_counter = 0  # messages since last KB update
+_KB_UPDATE_INTERVAL = 5  # update KB every N messages
+_KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
+
 # Scheduled times (24-hour format)
 MORNING_HOUR = 9   # 9:00 AM
 EVENING_HOUR = 21   # 9:00 PM
@@ -1013,6 +1027,46 @@ def _send_direct_message(text: str) -> bool:
     except Exception as e:
         log.error(f"Direct message send failed: {e}")
         return False
+
+
+def _trigger_incremental_kb_update():
+    """Trigger a background knowledge base update after conversations.
+
+    Instead of waiting for evening reflection, this updates the knowledge
+    base every few messages. This means the twin's understanding stays
+    current throughout the day — tasks completed, situations changed,
+    new information learned — without the user having to explicitly ask.
+
+    Runs in a background thread so it doesn't delay the response.
+    """
+    global _kb_message_counter, _last_kb_update_time
+
+    _kb_message_counter += 1
+
+    # Only update if enough messages have passed AND enough time has passed
+    now = time.time()
+    if _kb_message_counter < _KB_UPDATE_INTERVAL:
+        return
+    if now - _last_kb_update_time < _KB_MIN_SECONDS_BETWEEN:
+        return
+
+    # Reset counter and start update in background
+    _kb_message_counter = 0
+    _last_kb_update_time = now
+
+    def update_in_background():
+        try:
+            log.info("Triggering incremental knowledge base update...")
+            today = cm.get_today_context()
+            if today and len(today) > 100:
+                results = kb.update_all(llm_client, SYSTEM_PROMPT, today)
+                updated_count = sum(1 for v in results.values() if v > 0)
+                log.info(f"Incremental KB update done: {updated_count} domains refreshed")
+        except Exception as e:
+            log.error(f"Incremental KB update failed: {e}")
+
+    # Run in background thread
+    threading.Thread(target=update_in_background, daemon=True).start()
 
 
 def _trigger_morning():

@@ -1248,6 +1248,191 @@ def tool_list_routines() -> str:
 
 
 # ---------------------------------------------------------------------- #
+# Phone Integration Tools (via Termux:API)
+# ---------------------------------------------------------------------- #
+
+import subprocess as _subprocess
+
+
+def tool_send_notification(title: str, text: str) -> str:
+    """Send a phone notification to the user.
+
+    Uses Termux:API to create an Android notification. The user sees it
+    in their notification bar even if they're not in Telegram.
+    """
+    try:
+        _subprocess.run(
+            ["termux-notification", "--title", title, "--content", text],
+            timeout=10, capture_output=True
+        )
+        return f"Notification sent: {title}"
+    except _subprocess.TimeoutExpired:
+        return "Notification timed out — Termux:API may not be installed."
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Notification failed: {type(e).__name__}: {e}"
+
+
+def tool_open_url(url: str) -> str:
+    """Open a URL in the phone's browser.
+
+    Uses Termux:API to open the URL directly. The user doesn't have to
+    copy-paste — the browser opens automatically.
+    """
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+        _subprocess.run(
+            ["termux-open-url", url],
+            timeout=10, capture_output=True
+        )
+        return f"Opened {url} in browser"
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Open URL failed: {type(e).__name__}: {e}"
+
+
+def tool_copy_to_clipboard(text: str) -> str:
+    """Copy text to the phone's clipboard.
+
+    The user can then paste it anywhere — into an email, a text message,
+    a form, etc. Useful for draft text, phone numbers, addresses.
+    """
+    try:
+        _subprocess.run(
+            ["termux-clipboard-set", text],
+            timeout=10, capture_output=True,
+            input=text.encode()
+        )
+        return f"Copied to clipboard ({len(text)} chars)"
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Clipboard failed: {type(e).__name__}: {e}"
+
+
+def tool_get_clipboard() -> str:
+    """Read the current clipboard contents.
+
+    Useful if the user copied something and wants the twin to process it.
+    """
+    try:
+        result = _subprocess.run(
+            ["termux-clipboard-get"],
+            timeout=10, capture_output=True, text=True
+        )
+        content = result.stdout.strip()
+        if content:
+            return f"Clipboard contents:\n{content}"
+        return "Clipboard is empty"
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Clipboard read failed: {type(e).__name__}: {e}"
+
+
+def tool_set_alarm(hours_from_now: float, message: str = "") -> str:
+    """Set a phone notification as a reminder.
+
+    Uses Termux:API notification with a delay. Not a system alarm, but
+    a notification that appears after the specified time.
+
+    Args:
+        hours_from_now: How many hours from now to send the reminder
+        message: What the reminder should say
+    """
+    try:
+        import threading
+        seconds = int(hours_from_now * 3600)
+
+        def delayed_notification():
+            time.sleep(seconds)
+            try:
+                _subprocess.run(
+                    ["termux-notification",
+                     "--title", "AI Twin Reminder",
+                     "--content", message or "Reminder"],
+                    timeout=10, capture_output=True
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=delayed_notification, daemon=True).start()
+
+        from datetime import timedelta
+        fire_time = datetime.now() + timedelta(hours=hours_from_now)
+        fire_str = fire_time.strftime("%I:%M %p on %B %d")
+        return f"Reminder set for {fire_str}: '{message}'"
+    except Exception as e:
+        return f"Reminder failed: {type(e).__name__}: {e}"
+
+
+def tool_send_sms(phone_number: str, message: str) -> str:
+    """Draft an SMS — opens the SMS app with the message pre-filled.
+
+    Uses Termux:API to open the SMS app. The user reviews and sends.
+    The twin never sends SMS automatically — it drafts, the user sends.
+    """
+    try:
+        _subprocess.run(
+            ["termux-sms-send", "-n", phone_number, message],
+            timeout=10, capture_output=True
+        )
+        return f"SMS app opened with message to {phone_number}. Review and send."
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"SMS draft failed: {type(e).__name__}: {e}"
+
+
+def tool_dial_phone(phone_number: str) -> str:
+    """Open the phone dialer with a number pre-filled.
+
+    Uses Termux:API to open the dialer. The user presses call.
+    """
+    try:
+        _subprocess.run(
+            ["termux-telephony-call", phone_number],
+            timeout=10, capture_output=True
+        )
+        return f"Dialer opened with {phone_number}. Press call to connect."
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Dial failed: {type(e).__name__}: {e}"
+
+
+def tool_get_battery_status() -> str:
+    """Check the phone's battery level and charging status."""
+    try:
+        result = _subprocess.run(
+            ["termux-battery-status"],
+            timeout=10, capture_output=True, text=True
+        )
+        return f"Battery status: {result.stdout.strip()}"
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Battery check failed: {type(e).__name__}: {e}"
+
+
+def tool_get_location() -> str:
+    """Get the phone's current GPS location."""
+    try:
+        result = _subprocess.run(
+            ["termux-location"],
+            timeout=30, capture_output=True, text=True
+        )
+        return f"Location: {result.stdout.strip()}"
+    except FileNotFoundError:
+        return "Termux:API not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Location failed: {type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
 
@@ -1275,6 +1460,15 @@ _TOOL_FUNCTIONS = {
     "list_contacts": tool_list_contacts,
     "create_routine": tool_create_routine,
     "list_routines": tool_list_routines,
+    "send_notification": tool_send_notification,
+    "open_url": tool_open_url,
+    "copy_to_clipboard": tool_copy_to_clipboard,
+    "get_clipboard": tool_get_clipboard,
+    "set_alarm": tool_set_alarm,
+    "send_sms": tool_send_sms,
+    "dial_phone": tool_dial_phone,
+    "get_battery_status": tool_get_battery_status,
+    "get_location": tool_get_location,
 }
 
 

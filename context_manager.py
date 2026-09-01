@@ -277,31 +277,27 @@ class ContextManager:
     # ------------------------------------------------------------------ #
 
     def build_context_for_response(self) -> str:
-        """Assemble the context window the bot reads before replying.
+        """Assemble context the bot reads before replying.
 
-        Uses the running profile (small, ~1500 tokens) instead of
-        sending 3 days of raw history (which was ~30K tokens).
+        Uses the knowledge base for long-term understanding (not raw logs).
+        Only includes today's actual messages for conversation flow.
 
-        Context now includes:
-        - Today's full log (needed for conversation flow)
-        - Yesterday's log only if today's is very short
-
-        The profile (managed by profile_manager.py) captures everything
-        important from older conversations. This is the right tradeoff:
-        the twin remembers who you are without burning tokens on raw history.
+        The knowledge base (managed by knowledge_base.py) captures MEANING
+        from all previous conversations. It's small (~2000 tokens) and
+        information-dense. The twin reads this instead of raw history.
         """
         parts: List[str] = []
 
+        # Today's actual messages — for immediate conversation flow only
         today = self.get_today_context()
         if today:
-            parts.append("# Today so far\n\n" + today)
+            # Keep today's messages but truncate if very long
+            # (we keep the most recent 4000 chars for conversation flow)
+            if len(today) > 4000:
+                today = "...[earlier today truncated]...\n\n" + today[-4000:]
+            parts.append("# Today's conversation so far\n\n" + today)
         else:
-            parts.append("# Today so far\n\n_(first message of the day)_")
-
-            # If today is empty, include yesterday for continuity
-            recent = self.get_recent_days(days=1)
-            if recent:
-                parts.append("# Yesterday\n\n" + recent)
+            parts.append("# Today's conversation so far\n\n_(no messages yet today)_")
 
         return "\n\n---\n\n".join(parts)
 

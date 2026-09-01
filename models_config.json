@@ -36,10 +36,11 @@
     "cerebras": {
       "base_url": "https://api.cerebras.ai/v1",
       "models": [
+        "gemma-4-31b",
         "llama3.1-8b-8192",
         "llama3.1-70b-8192"
       ],
-      "default_model": "llama3.1-8b-8192"
+      "default_model": "gemma-4-31b"
     },
     "zai": {
       "base_url": "https://api.z.ai/api/paas/v4",

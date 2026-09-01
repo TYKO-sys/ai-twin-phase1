@@ -63,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from context_manager import ContextManager
 from summarizer import run_weekly_summary
 from profile_manager import ProfileManager
+from knowledge_base import get_knowledge_base
 from tools import GEMINI_TOOLS_CONFIG, execute_tool
 from multi_provider import MultiProviderClient
 from error_handler import translate_error, friendly_status
@@ -111,7 +112,8 @@ if not any(_llm_keys):
 # ---------------------------------------------------------------------- #
 
 cm = ContextManager(MEMORY_DIR)
-pm = ProfileManager()  # running personalization profile
+pm = ProfileManager()
+kb = get_knowledge_base()  # structured knowledge base
 
 # Initialize multi-provider LLM client
 # Automatically rotates through OpenRouter → DeepSeek → Z.ai → Gemini
@@ -168,24 +170,29 @@ def _auth_user(message) -> bool:
 
 
 def _build_gemini_prompt(user_text: str) -> str:
-    """Build the full prompt sent to Gemini: profile + context + user message."""
+    """Build the full prompt sent to the LLM: knowledge base + today's conversation + message.
+
+    The knowledge base provides STRUCTURED UNDERSTANDING (not raw logs).
+    Today's conversation provides immediate context (flow).
+    The user's message is the new input.
+    """
     global _last_context_files
     _last_context_files = []
 
-    # The running profile (small, ~1500 tokens) captures who the user is
-    # without needing 3 days of raw history
-    profile = pm.get_profile_for_context()
+    # The knowledge base — distilled understanding, not raw logs
+    knowledge = kb.get_all_knowledge()
+    _last_context_files.append("knowledge_base")
 
-    # Today's conversation log (for immediate context)
+    # Today's conversation for immediate flow
     context = cm.build_context_for_response()
 
-    _last_context_files.append("profile.md")
+    prompt = f"""{knowledge}
 
-    prompt = f"""{profile}# CONTEXT FROM TODAY'S LOG
+---
+
+# TODAY'S CONVERSATION
 
 {context}
-
-# END CONTEXT
 
 # NEW MESSAGE FROM USER
 
@@ -729,7 +736,7 @@ def cmd_fix(message):
 
 @bot.message_handler(commands=["profile"])
 def cmd_profile(message):
-    """View or update the running personalization profile."""
+    """View or update the twin's knowledge base."""
     if not _auth_user(message):
         return
 
@@ -737,18 +744,22 @@ def cmd_profile(message):
     text = message.text.partition(" ")[2].strip().lower()
     if text == "update":
         _send_typing(message.chat.id)
-        _safe_reply(message, "Updating your profile based on today's conversations...")
+        _safe_reply(message, "Updating my understanding based on today's conversations...")
         try:
             today = cm.get_today_context()
-            updated = pm.update_profile(llm_client, SYSTEM_PROMPT, today)
-            _safe_reply(message, f"Profile updated.\n\n{updated}")
+            results = kb.update_all(llm_client, SYSTEM_PROMPT, today)
+            updated_count = sum(1 for v in results.values() if v > 0)
+            _safe_reply(message, f"Done. I refreshed {updated_count} areas of my understanding.")
         except Exception as e:
-            _safe_reply(message, f"Profile update failed: {type(e).__name__}: {e}")
+            _safe_reply(message, f"Update failed: {type(e).__name__}: {e}")
         return
 
-    # Just show the current profile
-    profile = pm.get_profile()
-    _safe_reply(message, f"Here's what I know about you:\n\n{profile}")
+    # Show the knowledge base
+    knowledge = kb.get_all_knowledge()
+    if not knowledge or len(knowledge) < 100:
+        _safe_reply(message, "I'm still getting to know you. Talk to me more and I'll build my understanding.")
+        return
+    _safe_reply(message, f"Here's what I know:\n\n{knowledge}")
 
 
 @bot.message_handler(commands=["resend"])
@@ -838,14 +849,15 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
             cm.append_to_today("twin", reply, observation="evening reflection")
             _safe_reply(message, reply)
 
-            # Now update the running profile based on today's conversations
+            # Now update the knowledge base based on today's conversations
             # This happens silently in the background after the reflection
             try:
-                log.info("Updating profile after evening reflection...")
-                pm.update_profile(llm_client, SYSTEM_PROMPT, today)
-                log.info("Profile updated successfully")
+                log.info("Updating knowledge base after evening reflection...")
+                results = kb.update_all(llm_client, SYSTEM_PROMPT, today)
+                updated_count = sum(1 for v in results.values() if v > 0)
+                log.info(f"Knowledge base updated: {updated_count} domains refreshed")
             except Exception as e:
-                log.error(f"Profile update failed: {e}")
+                log.error(f"Knowledge base update failed: {e}")
             return
 
     # Regular message — log it

@@ -152,6 +152,7 @@ CODE_FILES=(
     "openrouter_client.py"
     "multi_provider.py"
     "model_manager.py"
+    "knowledge_base.py"
     "profile_manager.py"
     "error_handler.py"
     "summarizer.py"

@@ -432,12 +432,12 @@ def cmd_help(message):
         "/fix — get me back online if I'm having trouble\n"
         "/profile — see what I know about you\n"
         "/profile update — refresh my memory\n"
+        "/morning — what's the one thing today\n"
+        "/evening — update my understanding\n"
+        "/weekly — generate weekly review\n"
         "/search <word> — find something I remember\n"
         "/forget <topic> — let go of something\n"
         "/ping — ask me for a check-in question\n"
-        "/morning — get today's focus point\n"
-        "/evening — start evening reflection\n"
-        "/weekly — generate weekly review\n"
         "/resend — say that again\n\n"
         "Or just send me anything. I'll figure it out."
     )
@@ -548,48 +548,37 @@ def cmd_cancel(message):
 
 @bot.message_handler(commands=["morning"])
 def cmd_morning(message):
-    """Triggered by automation at 9am (or manually)."""
+    """Morning prompt — now uses the knowledge base for context."""
     if not _auth_user(message):
         return
     _send_typing(message.chat.id)
-    today = cm.get_today_context()
-    recent = cm.get_recent_days(days=2)
-    prompt = f"""It's morning. The user just woke up (or you're prompting them).
+    knowledge = kb.get_all_knowledge()
+    prompt = f"""{knowledge}
 
-Generate the morning message in the format described in your instructions:
-- One thing that matters most today, based on yesterday's context
-- A specific, small, doable step
-- One sentence of context for why this is the thing
-- End with a yes/no or short-answer question
+# YOUR TASK
+The user just asked for their morning prompt. Look at what you know about them — their tasks, upcoming events, open threads — and tell them the ONE thing that matters most today. Be specific. Reference real items from their life. End with a short question.
 
-Under 5 lines total. Be direct.
-
-# RECENT CONTEXT
-
-{recent}
-
-# TODAY SO FAR (if anything)
-
-{today}
+Keep it under 5 lines. No pre-exposition. No closing wrapper. Just the point.
 """
-    reply = _call_gemini(prompt) + _footer()
-    cm.append_to_today("twin", reply, observation="morning ping triggered")
+    reply = _call_gemini(prompt)
+    cm.append_to_today("twin", reply, observation="morning prompt")
     _safe_reply(message, reply)
 
 
 @bot.message_handler(commands=["evening"])
 def cmd_evening(message):
-    """Triggered by automation at 9pm (or manually)."""
+    """Evening — now triggers a knowledge base update instead of 3 questions."""
     if not _auth_user(message):
         return
-    cm.append_to_today("twin", "Evening check-in started.",
-                       observation="evening ping triggered")
-    evening_state[message.from_user.id] = 1
-    _safe_reply(
-        message,
-        "Evening. Three questions, one at a time.\n\n"
-        "1. What actually happened today?"
-    )
+    _send_typing(message.chat.id)
+    _safe_reply(message, "Updating my understanding of today...")
+    try:
+        today = cm.get_today_context()
+        results = kb.update_all(llm_client, SYSTEM_PROMPT, today)
+        updated_count = sum(1 for v in results.values() if v > 0)
+        _safe_reply(message, f"Done. I refreshed {updated_count} areas of my understanding.")
+    except Exception as e:
+        _safe_reply(message, f"Update failed: {type(e).__name__}: {e}")
 
 
 @bot.message_handler(commands=["weekly"])
@@ -828,47 +817,24 @@ def handle_text(message):
         )
         return
 
-    # Evening reflection flow
+    # Evening reflection flow — DISABLED per user request
+    # The evening reflection was causing duplicate messages and no longer
+    # serves a purpose. Knowledge base auto-updates capture the same info.
     user_id = message.from_user.id
     step = evening_state.get(user_id)
     if step:
-        cm.append_to_today("user", f"(evening Q{step}) {text}")
-        if step == 1:
-            evening_state[user_id] = 2
-            _safe_reply(message, "2. What did you avoid?")
-            return
-        elif step == 2:
-            evening_state[user_id] = 3
-            _safe_reply(
-                message,
-                "3. What's one true thing you want tomorrow-you to know?"
-            )
-            return
-        elif step == 3:
-            evening_state.pop(user_id, None)
-            _send_typing(message.chat.id)
+        # Clear the evening state so it doesn't loop
+        evening_state.pop(user_id, None)
+        _safe_reply(message, "I've got everything I need from today. No more questions.")
+        # Trigger a knowledge base update instead
+        try:
             today = cm.get_today_context()
-            prompt = f"""Evening reflection complete. The user answered three questions.
-Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
-
-# Today's full log
-
-{today}
-"""
-            reply = _call_gemini(prompt) + _footer()
-            cm.append_to_today("twin", reply, observation="evening reflection")
-            _safe_reply(message, reply)
-
-            # Now update the knowledge base based on today's conversations
-            # This happens silently in the background after the reflection
-            try:
-                log.info("Updating knowledge base after evening reflection...")
-                results = kb.update_all(llm_client, SYSTEM_PROMPT, today)
-                updated_count = sum(1 for v in results.values() if v > 0)
-                log.info(f"Knowledge base updated: {updated_count} domains refreshed")
-            except Exception as e:
-                log.error(f"Knowledge base update failed: {e}")
-            return
+            threading.Thread(target=lambda: kb.update_all(
+                llm_client, SYSTEM_PROMPT, today
+            ), daemon=True).start()
+        except Exception:
+            pass
+        return
 
     # Regular message — log it
     cm.append_to_today("user", text)
@@ -1030,11 +996,13 @@ _SILENCE_CHECK_INTERVAL = 3600  # Check for silence every hour (not every minute
 _PROACTIVE_QUIET_HOURS = (23, 7)  # don't message between 11pm and 7am
 _PROACTIVE_SILENCE_THRESHOLD = 14400  # 4 hours of silence triggers a check-in
 
-# Scheduled times (24-hour format)
-MORNING_HOUR = 9   # 9:00 AM
-EVENING_HOUR = 21   # 9:00 PM
-WEEKLY_DAY = 6      # Sunday (0=Monday, 6=Sunday)
-WEEKLY_HOUR = 20    # 8:00 PM
+# Scheduled times (24-hour format) — DISABLED per user request
+# Morning/evening/weekly routines removed. The twin no longer pings on a schedule.
+# Proactive messaging (event-driven) replaces these routines.
+MORNING_HOUR = None
+EVENING_HOUR = None
+WEEKLY_DAY = None
+WEEKLY_HOUR = None
 
 
 def _send_direct_message(text: str) -> bool:
@@ -1494,21 +1462,9 @@ def _scheduler_loop():
             now = datetime.now()
             today_str = now.strftime("%Y-%m-%d")
 
-            # Morning ping (9:00 AM)
-            if (now.hour == MORNING_HOUR and now.minute == 0
-                    and _last_morning_date != today_str):
-                _trigger_morning()
-
-            # Evening ping (9:00 PM)
-            if (now.hour == EVENING_HOUR and now.minute == 0
-                    and _last_evening_date != today_str):
-                _trigger_evening()
-
-            # Weekly review (Sunday 8:00 PM)
-            if (now.weekday() == WEEKLY_DAY
-                    and now.hour == WEEKLY_HOUR and now.minute == 0
-                    and _last_weekly_date != today_str):
-                _trigger_weekly()
+            # Morning/evening/weekly routines DISABLED per user request
+            # The proactive messaging system handles reaching out instead.
+            # Knowledge base auto-updates handle the evening reflection task.
 
         except Exception as e:
             log.error(f"Scheduler error: {e}")
@@ -1529,9 +1485,7 @@ def main() -> None:
     log.info(f"  LLM model: {LLM_MODEL}")
     log.info(f"  Allowed user: {ALLOWED_USER_ID}")
     log.info(f"  Library: pyTelegramBotAPI (telebot)")
-    log.info(f"  Scheduler: morning={MORNING_HOUR}am, "
-             f"evening={EVENING_HOUR}pm, "
-             f"weekly=Sunday {WEEKLY_HOUR}pm")
+    log.info(f"  Scheduler: routines disabled, proactive messaging active")
     log.info("=" * 60)
     log.info("Bot running. Press Ctrl+C to stop.")
 

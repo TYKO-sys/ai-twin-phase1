@@ -877,6 +877,11 @@ Write a short reflection (3-5 sentences). Honest. Specific. No fluff.
     global _last_user_message_time
     _last_user_message_time = time.time()
 
+    # CANCEL pending proactive reminders that are now redundant
+    # If the user just messaged about something we were going to remind
+    # them about, cancel that reminder — they already know.
+    _cancel_redundant_reminders(text)
+
     # Check if we're already processing another message.
     # telebot processes sequentially, so if the user sent multiple messages
     # quickly, the earlier ones are still being processed. Let them know
@@ -1295,6 +1300,90 @@ def _safe_reply_to_user(text: str):
         cm.append_to_today("twin", text, observation="proactive message")
     except Exception as e:
         log.error(f"Proactive message send failed: {e}")
+
+
+def _cancel_redundant_reminders(user_text: str):
+    """Cancel pending proactive reminders that are now redundant.
+
+    When the user messages, check if what they're talking about overlaps
+    with any pending reminders. If so, cancel those reminders — they're
+    already aware, so pinging them about it would be annoying.
+
+    This prevents the scenario where:
+    1. Twin decides to remind about the probation appointment
+    2. User messages "I already talked to my probation officer"
+    3. Twin sends the reminder anyway (annoying and redundant)
+
+    Instead:
+    1. Twin decides to remind about the probation appointment
+    2. User messages "I already talked to my probation officer"
+    3. _cancel_redundant_reminders detects the overlap and removes the reminder
+    4. Twin responds to the user's message (may include the reminder info naturally)
+    """
+    global _proactive_reminders_sent
+
+    if not _proactive_reminders_sent:
+        return  # Nothing to cancel
+
+    text_lower = user_text.lower()
+
+    # Keywords that indicate the user is already handling something
+    completion_keywords = [
+        "done", "finished", "called", "completed", "already", "took care",
+        "handled", "sent", "picked up", "went to", "saw", "talked to",
+        "texted", "emailed", "faxed", "rescheduled", "cancelled",
+        "don't need", "dont need", "not happening", "resolved",
+        "forgot about", "never mind", "nevermind", "skip",
+    ]
+
+    # Check if the user's message indicates they already handled something
+    already_handled = any(kw in text_lower for kw in completion_keywords)
+
+    # Get the knowledge base to check what reminders might be relevant
+    upcoming = kb.get_domain("upcoming.md")
+    tasks = kb.get_domain("tasks.md")
+
+    # Keywords from the upcoming/tasks that we might have reminders for
+    # If the user's message contains words from the reminder topics, cancel
+    reminders_to_remove = set()
+
+    for reminder_key in list(_proactive_reminders_sent):
+        # Extract the date/topic from the reminder key
+        # Reminder keys look like: "urgent_2026-09-07", "heads_up_2026-09-07",
+        # "silence_1234567890"
+
+        if reminder_key.startswith("silence_"):
+            # Cancel silence check-ins when user messages (they're no longer silent)
+            reminders_to_remove.add(reminder_key)
+            log.info(f"Cancelled silence check-in (user returned)")
+
+        elif already_handled and (upcoming or tasks):
+            # Check if the user's message relates to any upcoming events or tasks
+            # Extract date from reminder key
+            import re
+            date_match = re.search(r'\d{4}-\d{2}-\d{2}', reminder_key)
+            if date_match:
+                date_str = date_match.group(0)
+                # Check if this date appears in the upcoming/tasks AND the user's message
+                # references the same topic
+                if date_str in (upcoming or "") or date_str in (tasks or ""):
+                    # User might be talking about this event
+                    # Check if their message contains related keywords
+                    # from the upcoming/tasks line
+                    for line in (upcoming or "").split('\n') + (tasks or "").split('\n'):
+                        if date_str in line:
+                            # Extract keywords from the line
+                            words = re.findall(r'[a-zA-Z]{4,}', line.lower())
+                            # If user's message contains any of these keywords,
+                            # they're probably already talking about it
+                            if any(w in text_lower for w in words):
+                                reminders_to_remove.add(reminder_key)
+                                log.info(f"Cancelled redundant reminder {reminder_key} (user already discussing)")
+                                break
+
+    if reminders_to_remove:
+        _proactive_reminders_sent -= reminders_to_remove
+        log.info(f"Cancelled {len(reminders_to_remove)} redundant reminders")
 
 
 def _trigger_morning():

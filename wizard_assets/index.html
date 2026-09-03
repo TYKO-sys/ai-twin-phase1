@@ -216,6 +216,51 @@
 
             <div id="error-message" class="error"></div>
 
+            <details class="final-steps" style="margin-top: 24px; border: 1px dashed #999; padding: 16px; border-radius: 8px;">
+                <summary style="cursor: pointer; font-weight: bold; font-size: 1.05em;">
+                    Optional: Enable native email (no n8n needed) ▾
+                </summary>
+                <p style="margin-top: 12px; color: #666; font-size: 0.9em;">
+                    Skip this and your twin still works perfectly. Enable it if you want your twin
+                    to send emails on your behalf for free (no n8n.cloud subscription required).
+                    Works with Gmail (use an App Password), Outlook, Yahoo, or any SMTP server.
+                </p>
+                <div class="input-group">
+                    <label for="smtp_host">SMTP Host (e.g., smtp.gmail.com):</label>
+                    <input type="text" id="smtp_host" name="smtp_host"
+                           placeholder="smtp.gmail.com"
+                           value="{{SMTP_HOST}}">
+                </div>
+                <div class="input-group">
+                    <label for="smtp_port">SMTP Port (587 for TLS, 465 for SSL):</label>
+                    <input type="text" id="smtp_port" name="smtp_port"
+                           placeholder="587"
+                           value="{{SMTP_PORT}}">
+                </div>
+                <div class="input-group">
+                    <label for="smtp_user">SMTP Username (your email):</label>
+                    <input type="text" id="smtp_user" name="smtp_user"
+                           placeholder="you@gmail.com"
+                           value="{{SMTP_USER}}">
+                </div>
+                <div class="input-group">
+                    <label for="smtp_pass">SMTP Password (Gmail: use App Password, not your real password):</label>
+                    <input type="password" id="smtp_pass" name="smtp_pass"
+                           placeholder="16-char App Password"
+                           value="{{SMTP_PASS}}">
+                </div>
+                <div class="input-group">
+                    <label for="smtp_from">From address (defaults to SMTP_USER if blank):</label>
+                    <input type="text" id="smtp_from" name="smtp_from"
+                           placeholder="you@gmail.com"
+                           value="{{SMTP_FROM}}">
+                </div>
+                <p style="margin-top: 8px; color: #888; font-size: 0.85em;">
+                    To get a Gmail App Password: enable 2FA on your Google account, then visit
+                    <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.
+                </p>
+            </details>
+
             <button class="btn-back" onclick="prevStep(4)">← Back</button>
             <button class="btn-submit" onclick="submitForm()">Finish Setup ✓</button>
         </div>

@@ -142,6 +142,18 @@ function submitForm() {
     formData.append('zai_key', zaiKey);
     formData.append('gemini_key', geminiKey);
 
+    // Optional SMTP fields (native email — no n8n needed)
+    const smtpHost = document.getElementById('smtp_host') ? document.getElementById('smtp_host').value.trim() : '';
+    const smtpPort = document.getElementById('smtp_port') ? document.getElementById('smtp_port').value.trim() : '';
+    const smtpUser = document.getElementById('smtp_user') ? document.getElementById('smtp_user').value.trim() : '';
+    const smtpPass = document.getElementById('smtp_pass') ? document.getElementById('smtp_pass').value.trim() : '';
+    const smtpFrom = document.getElementById('smtp_from') ? document.getElementById('smtp_from').value.trim() : '';
+    if (smtpHost) formData.append('smtp_host', smtpHost);
+    if (smtpPort) formData.append('smtp_port', smtpPort);
+    if (smtpUser) formData.append('smtp_user', smtpUser);
+    if (smtpPass) formData.append('smtp_pass', smtpPass);
+    if (smtpFrom) formData.append('smtp_from', smtpFrom);
+
     // Submit to server
     fetch('/submit', {
         method: 'POST',

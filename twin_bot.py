@@ -1317,6 +1317,102 @@ def _website_monitoring_loop():
             log.error(f"Website monitoring error: {e}")
 
 
+def _rss_monitoring_loop():
+    """Background thread that checks subscribed RSS feeds.
+
+    Reads the list of feeds from ~/ai-twin-memory/rss_feeds.txt (one URL per line).
+    Checks each feed every 30 minutes, stores the latest item timestamp per feed,
+    and notifies the user when a new item appears.
+
+    Zero tokens when idle. Only uses tokens when a new item is detected.
+    """
+    from tools import tool_read_rss
+    feeds_file = Path.home() / "ai-twin-memory" / "rss_feeds.txt"
+    seen_file = Path.home() / "ai-twin-memory" / "rss_seen.json"
+    log.info("RSS monitoring started (checks every 30 minutes)")
+
+    # Load the "already seen" set
+    def load_seen() -> dict:
+        try:
+            if seen_file.exists():
+                return json.loads(seen_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def save_seen(seen: dict) -> None:
+        try:
+            seen_file.write_text(json.dumps(seen, indent=2), encoding="utf-8")
+        except Exception as e:
+            log.error(f"Could not save RSS seen file: {e}")
+
+    while True:
+        time.sleep(1800)  # Check every 30 minutes
+
+        try:
+            if not feeds_file.exists():
+                continue
+            feeds = [line.strip() for line in feeds_file.read_text(encoding="utf-8").splitlines()
+                     if line.strip() and not line.startswith("#")]
+            if not feeds:
+                continue
+
+            # Quiet hours — don't send RSS notifications at night
+            now = datetime.now()
+            if now.hour >= 23 or now.hour < 7:
+                continue
+
+            seen = load_seen()
+
+            for feed_url in feeds:
+                try:
+                    # Fetch latest 5 items
+                    result = tool_read_rss(feed_url, limit=5)
+                    # Parse out items (the format is "1. Title\n   Published: ...\n   Link: ...")
+                    import re
+                    items = re.findall(r"\d+\.\s+(.+?)\n\s+Published:\s+(.+?)\n\s+Link:\s+(\S+)", result)
+                    if not items:
+                        continue
+
+                    feed_seen = seen.get(feed_url, [])
+                    new_items = []
+                    for title, pub, link in items:
+                        # Use link as the dedup key
+                        if link not in feed_seen:
+                            new_items.append((title, pub, link))
+
+                    if not new_items:
+                        continue
+
+                    # Send notification
+                    if len(new_items) == 1:
+                        title, pub, link = new_items[0]
+                        msg = f"📡 New item in feed:\n{title}\n{link}"
+                    else:
+                        msg = f"📡 {len(new_items)} new items in feed:\n"
+                        for title, _, link in new_items[:3]:
+                            msg += f"  • {title}\n    {link}\n"
+                        if len(new_items) > 3:
+                            msg += f"  ... and {len(new_items) - 3} more"
+
+                    _send_telegram_message(ALLOWED_USER_ID, msg)
+                    cm.append_to_today("twin",
+                        f"RSS new items for {feed_url}: {len(new_items)}",
+                        observation="rss monitor")
+                    log.info(f"RSS update: {feed_url} -> {len(new_items)} new item(s)")
+
+                    # Update seen list (keep last 50 per feed)
+                    updated = list({link for _, _, link in new_items}) + feed_seen
+                    seen[feed_url] = updated[:50]
+                except Exception as e:
+                    log.error(f"RSS fetch error for {feed_url}: {e}")
+
+            save_seen(seen)
+
+        except Exception as e:
+            log.error(f"RSS monitoring error: {e}")
+
+
 def _cancel_redundant_reminders(user_text: str):
     """Cancel pending proactive reminders that are now redundant.
 
@@ -1553,6 +1649,12 @@ def main() -> None:
                                        daemon=True)
     monitor_thread.start()
     log.info("Website monitoring thread started")
+
+    # Start the RSS monitoring thread (subscribed feeds)
+    rss_thread = threading.Thread(target=_rss_monitoring_loop,
+                                    daemon=True)
+    rss_thread.start()
+    log.info("RSS monitoring thread started")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

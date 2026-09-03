@@ -498,22 +498,24 @@ TOOL_DEFINITIONS = [
     {
         "name": "trigger_webhook",
         "description": (
-            "Trigger an n8n cloud workflow via webhook. n8n connects to "
-            "400+ services (email, calendar, Slack, Google Sheets, etc.). "
-            "The user sets up workflows in n8n.cloud and this triggers them."
+            "Trigger ANY HTTP webhook (n8n self-hosted, n8n.cloud, IFTTT, "
+            "Make, Zapier, custom server, Home Assistant, etc.). "
+            "Sends a POST request with JSON data to the webhook URL. "
+            "Use this when the user has set up an automation workflow "
+            "somewhere that expects to be triggered by HTTP."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "webhook_name": {"type": "string", "description": "Name of a saved webhook"},
-                "webhook_url": {"type": "string", "description": "Full webhook URL from n8n"},
+                "webhook_url": {"type": "string", "description": "Full webhook URL (any provider)"},
                 "data": {"type": "string", "description": "JSON data to send to the workflow"}
             }
         }
     },
     {
         "name": "save_webhook",
-        "description": "Save an n8n webhook URL for easy triggering later.",
+        "description": "Save an HTTP webhook URL (any provider — n8n self-hosted, IFTTT, Make, Zapier, custom) for easy triggering later.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -526,8 +528,83 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "list_webhooks",
-        "description": "List all saved n8n webhook URLs.",
+        "description": "List all saved webhook URLs.",
         "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "send_email",
+        "description": (
+            "Send an email directly from the twin using SMTP. "
+            "Requires the user to have configured SMTP credentials in .env "
+            "(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM). "
+            "Works with Gmail (use an App Password, not your real password), "
+            "Outlook, Yahoo, ProtonMail Bridge, or any standard SMTP server. "
+            "FREE alternative to n8n for sending emails."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address"},
+                "subject": {"type": "string", "description": "Email subject line"},
+                "body": {"type": "string", "description": "Email body (plain text)"},
+                "html": {"type": "string", "description": "Optional HTML body (overrides plain text if provided)"}
+            },
+            "required": ["to", "subject", "body"]
+        }
+    },
+    {
+        "name": "create_calendar_event",
+        "description": (
+            "Create a calendar event as an .ics file (iCalendar standard) "
+            "that the user can import into Google Calendar, Apple Calendar, "
+            "Outlook, or any calendar app. The .ics file is saved to the "
+            "download folder and the user receives the path. "
+            "FREE alternative to n8n for calendar automation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Event title"},
+                "start": {"type": "string", "description": "Start time, ISO 8601 (e.g., '2026-09-10T14:00:00')"},
+                "end": {"type": "string", "description": "End time, ISO 8601 (e.g., '2026-09-10T15:00:00')"},
+                "location": {"type": "string", "description": "Optional location"},
+                "description": {"type": "string", "description": "Optional description/notes"},
+                "reminder_minutes": {"type": "integer", "description": "Optional reminder N minutes before (default 15)"}
+            },
+            "required": ["title", "start", "end"]
+        }
+    },
+    {
+        "name": "read_rss",
+        "description": (
+            "Fetch and parse an RSS or Atom feed. Returns the latest N items "
+            "with title, link, summary, and publish date. "
+            "Works for news sites, blogs, YouTube channels, podcasts, "
+            "Reddit subreddits (append .rss to a subreddit URL), etc. "
+            "FREE alternative to n8n for news/content monitoring."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "RSS/Atom feed URL"},
+                "limit": {"type": "integer", "description": "Max items to return (default 5)"}
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "shorten_url",
+        "description": (
+            "Shorten a long URL using the free is.gd API (no key required). "
+            "Useful when the user needs to share a long link via SMS or chat."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The long URL to shorten"}
+            },
+            "required": ["url"]
+        }
     }
 ]
 
@@ -1769,23 +1846,21 @@ def _save_n8n_webhooks(hooks: dict) -> None:
 
 def tool_trigger_webhook(webhook_name: str = "", webhook_url: str = "",
                          data: str = "{}") -> str:
-    """Trigger an n8n workflow via webhook.
+    """Trigger ANY HTTP webhook (n8n self-hosted, n8n.cloud, IFTTT, Make,
+    Zapier, custom server, Home Assistant, etc.).
 
-    n8n is a free cloud automation platform that connects to 400+ services.
-    You set up workflows in n8n.cloud, and this tool triggers them.
+    This is a generic HTTP POST tool — it sends JSON to any URL you provide.
+    It works with any automation platform that exposes webhook triggers.
 
-    Examples of what n8n workflows can do:
-    - Send emails (Gmail, Outlook, etc.)
-    - Create calendar events (Google Calendar)
-    - Add rows to Google Sheets
-    - Post to Slack/Discord
-    - Send SMS via Twilio
-    - Create tasks in Notion/Todoist
-    - Post to social media
+    Common scenarios:
+    - Trigger a self-hosted n8n workflow (see N8N_SELFHOST_GUIDE.md)
+    - Trigger an IFTTT applet
+    - Send a notification to Home Assistant
+    - POST to a custom server endpoint
 
     Args:
         webhook_name: Name of a saved webhook (if you've saved one before)
-        webhook_url: Full webhook URL from n8n (https://n8n.cloud/webhook/...)
+        webhook_url: Full webhook URL (any provider)
         data: JSON string with data to send to the workflow
     """
     try:
@@ -1817,11 +1892,11 @@ def tool_trigger_webhook(webhook_name: str = "", webhook_url: str = "",
 
 
 def tool_save_webhook(name: str, webhook_url: str, description: str = "") -> str:
-    """Save an n8n webhook URL for easy triggering later.
+    """Save an HTTP webhook URL for easy triggering later.
 
     Args:
         name: A short name to identify this webhook (e.g., "send_email", "add_calendar_event")
-        webhook_url: The full webhook URL from n8n.cloud
+        webhook_url: The full webhook URL (any provider — n8n self-hosted, IFTTT, Make, etc.)
         description: What this workflow does
     """
     hooks = _load_n8n_webhooks()
@@ -1831,7 +1906,7 @@ def tool_save_webhook(name: str, webhook_url: str, description: str = "") -> str
 
 
 def tool_list_webhooks() -> str:
-    """List all saved n8n webhook URLs."""
+    """List all saved webhook URLs (any provider)."""
     hooks = _load_n8n_webhooks()
     if not hooks:
         return "No saved webhooks. Use save_webhook to add one."
@@ -1841,6 +1916,287 @@ def tool_list_webhooks() -> str:
         masked = url[:30] + "..." if len(url) > 30 else url
         lines.append(f"  {name}: {masked}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------- #
+# Native Automation — FREE alternatives to n8n
+# These tools do the most common automation tasks without needing
+# any external automation platform. Email, calendar, RSS — built in.
+# ---------------------------------------------------------------------- #
+
+def _load_smtp_config() -> dict:
+    """Load SMTP config from .env or memory file."""
+    # Try .env first (loaded into os.environ at startup)
+    cfg = {
+        "host": os.environ.get("SMTP_HOST", ""),
+        "port": os.environ.get("SMTP_PORT", "587"),
+        "user": os.environ.get("SMTP_USER", ""),
+        "pass": os.environ.get("SMTP_PASS", ""),
+        "from": os.environ.get("SMTP_FROM", ""),
+    }
+    if cfg["host"] and cfg["user"] and cfg["pass"]:
+        return cfg
+    # Fallback: memory file
+    smtp_file = Path.home() / "ai-twin-memory" / "smtp_config.json"
+    if smtp_file.exists():
+        try:
+            return json.loads(smtp_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def tool_send_email(to: str, subject: str, body: str, html: str = "") -> str:
+    """Send an email via SMTP. Requires SMTP credentials in .env or memory.
+
+    Setup for Gmail (free):
+    1. Enable 2FA on your Google account
+    2. Go to https://myaccount.google.com/apppasswords
+    3. Create an App Password (16 chars, no spaces)
+    4. Add these to .env:
+       SMTP_HOST=smtp.gmail.com
+       SMTP_PORT=587
+       SMTP_USER=your@gmail.com
+       SMTP_PASS=your-16-char-app-password
+       SMTP_FROM=your@gmail.com
+
+    Also works with:
+    - Outlook: smtp.office365.com:587
+    - Yahoo: smtp.mail.yahoo.com:587
+    - ProtonMail Bridge: 127.0.0.1:1025 (requires Bridge running)
+    - Any standard SMTP server
+
+    Args:
+        to: Recipient email address
+        subject: Email subject
+        body: Plain text body
+        html: Optional HTML body (overrides plain text)
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    cfg = _load_smtp_config()
+    if not cfg.get("host") or not cfg.get("user") or not cfg.get("pass"):
+        return (
+            "SMTP not configured. To enable email:\n"
+            "1. For Gmail: enable 2FA, create an App Password at\n"
+            "   https://myaccount.google.com/apppasswords\n"
+            "2. Add to your .env file:\n"
+            "   SMTP_HOST=smtp.gmail.com\n"
+            "   SMTP_PORT=587\n"
+            "   SMTP_USER=your@gmail.com\n"
+            "   SMTP_PASS=your-16-char-app-password\n"
+            "   SMTP_FROM=your@gmail.com\n"
+            "3. Restart the twin with: twin-stop && twin-start"
+        )
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = cfg.get("from") or cfg["user"]
+        msg["To"] = to
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        if html:
+            msg.attach(MIMEText(html, "html", "utf-8"))
+
+        port = int(cfg.get("port", 587))
+        host = cfg["host"]
+
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=30) as srv:
+                srv.login(cfg["user"], cfg["pass"])
+                srv.sendmail(msg["From"], [to], msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as srv:
+                srv.ehlo()
+                srv.starttls()
+                srv.ehlo()
+                srv.login(cfg["user"], cfg["pass"])
+                srv.sendmail(msg["From"], [to], msg.as_string())
+
+        return f"Email sent to {to}: {subject}"
+    except Exception as e:
+        return f"Email failed: {type(e).__name__}: {e}"
+
+
+def tool_create_calendar_event(title: str, start: str, end: str,
+                                location: str = "", description: str = "",
+                                reminder_minutes: int = 15) -> str:
+    """Create a calendar event as an .ics file the user can import.
+
+    The .ics file is written to ~/ai-twin-memory/calendar/ and the path
+    is returned. On Android, the user can open it to add the event to
+    their default calendar app.
+
+    Args:
+        title: Event title
+        start: Start time, ISO 8601 (e.g., '2026-09-10T14:00:00')
+        end: End time, ISO 8601
+        location: Optional location string
+        description: Optional description/notes
+        reminder_minutes: Minutes before to trigger a reminder (default 15)
+    """
+    from datetime import datetime
+
+    try:
+        # Parse and validate
+        dt_start = datetime.fromisoformat(start)
+        dt_end = datetime.fromisoformat(end)
+
+        # iCalendar uses UTC with Z suffix; we'll use local time without Z
+        fmt_start = dt_start.strftime("%Y%m%dT%H%M%S")
+        fmt_end = dt_end.strftime("%Y%m%dT%H%M%S")
+        now = datetime.now().strftime("%Y%m%dT%H%M%S")
+        uid = f"{now}-{title[:20].replace(' ', '-')}@ai-twin"
+
+        # Escape text per RFC 5545
+        def esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+        lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//AI Twin//Termux//EN",
+            "CALSCALE:GREGORIAN",
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{now}",
+            f"DTSTART:{fmt_start}",
+            f"DTEND:{fmt_end}",
+            f"SUMMARY:{esc(title)}",
+        ]
+        if location:
+            lines.append(f"LOCATION:{esc(location)}")
+        if description:
+            lines.append(f"DESCRIPTION:{esc(description)}")
+        lines.extend([
+            "BEGIN:VALARM",
+            f"TRIGGER:-PT{int(reminder_minutes)}M",
+            "ACTION:DISPLAY",
+            f"DESCRIPTION:{esc(title)}",
+            "END:VALARM",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ])
+        ics_content = "\r\n".join(lines) + "\r\n"
+
+        out_dir = Path.home() / "ai-twin-memory" / "calendar"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:40]
+        filename = f"{dt_start.strftime('%Y%m%d_%H%M')}_{safe_title}.ics"
+        out_path = out_dir / filename
+        out_path.write_text(ics_content, encoding="utf-8")
+
+        # Also copy to a Termux-shared location if available so the user
+        # can tap-to-open it from a file manager
+        shared_dir = Path("/storage/emulated/0/Download/ai-twin-calendar")
+        try:
+            shared_dir.mkdir(parents=True, exist_ok=True)
+            (shared_dir / filename).write_text(ics_content, encoding="utf-8")
+            shared_path = str(shared_dir / filename)
+        except Exception:
+            shared_path = None
+
+        when_human = dt_start.strftime("%a %b %d, %I:%M %p")
+        result = f"Calendar event created: {title} on {when_human}.\n"
+        result += f"ICS file: {out_path}\n"
+        if shared_path:
+            result += f"Also saved to: {shared_path}\n"
+        result += "Open the .ics file from a file manager to import it into your calendar app."
+        return result
+    except ValueError as e:
+        return f"Invalid date format. Use ISO 8601 (e.g., '2026-09-10T14:00:00'). Error: {e}"
+    except Exception as e:
+        return f"Calendar event failed: {type(e).__name__}: {e}"
+
+
+def tool_read_rss(url: str, limit: int = 5) -> str:
+    """Fetch and parse an RSS or Atom feed. Returns the latest items.
+
+    Args:
+        url: RSS/Atom feed URL
+        limit: Max items to return (default 5, max 20)
+    """
+    try:
+        limit = max(1, min(int(limit), 20))
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; AI-Twin/1.0)"
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+
+        # Parse with xml.etree (no extra deps)
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(resp.content)
+
+        # Strip XML namespaces for simplicity
+        for elem in root.iter():
+            if "}" in elem.tag:
+                elem.tag = elem.tag.split("}", 1)[1]
+
+        items = []
+        # RSS 2.0
+        for item in root.findall(".//item")[:limit]:
+            items.append({
+                "title": (item.findtext("title") or "").strip(),
+                "link": (item.findtext("link") or "").strip(),
+                "description": (item.findtext("description") or "").strip()[:200],
+                "pubDate": (item.findtext("pubDate") or "").strip(),
+            })
+
+        # Atom 1.0 (if no RSS items found)
+        if not items:
+            for entry in root.findall(".//entry")[:limit]:
+                link_elem = entry.find("link")
+                link = link_elem.get("href", "") if link_elem is not None else ""
+                items.append({
+                    "title": (entry.findtext("title") or "").strip(),
+                    "link": link.strip(),
+                    "description": (entry.findtext("summary") or entry.findtext("content") or "").strip()[:200],
+                    "pubDate": (entry.findtext("published") or entry.findtext("updated") or "").strip(),
+                })
+
+        if not items:
+            return f"No items found in feed: {url}"
+
+        lines = [f"Feed: {url}", f"Latest {len(items)} items:", ""]
+        for i, it in enumerate(items, 1):
+            lines.append(f"{i}. {it['title']}")
+            if it["pubDate"]:
+                lines.append(f"   Published: {it['pubDate']}")
+            if it["link"]:
+                lines.append(f"   Link: {it['link']}")
+            if it["description"]:
+                # Strip HTML from description
+                import re
+                desc = re.sub(r"<[^>]+>", "", it["description"]).strip()
+                if desc:
+                    lines.append(f"   {desc[:150]}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"RSS fetch failed: {type(e).__name__}: {e}"
+
+
+def tool_shorten_url(url: str) -> str:
+    """Shorten a URL using the free is.gd / v.gd APIs (no key needed).
+
+    Args:
+        url: The long URL to shorten
+    """
+    # Try is.gd first, fall back to v.gd (same service, different domain)
+    for api in ("https://is.gd/create.php", "https://v.gd/create.php"):
+        try:
+            resp = requests.get(api, params={"format": "simple", "url": url}, timeout=10)
+            resp.raise_for_status()
+            short = resp.text.strip()
+            if short.startswith("http"):
+                return f"Short URL: {short}"
+            # If we got a non-URL response, try the next provider
+        except Exception:
+            continue
+    return f"URL shortening failed for: {url}"
 
 
 # ---------------------------------------------------------------------- #
@@ -1887,6 +2243,10 @@ _TOOL_FUNCTIONS = {
     "trigger_webhook": tool_trigger_webhook,
     "save_webhook": tool_save_webhook,
     "list_webhooks": tool_list_webhooks,
+    "send_email": tool_send_email,
+    "create_calendar_event": tool_create_calendar_event,
+    "read_rss": tool_read_rss,
+    "shorten_url": tool_shorten_url,
 }
 
 

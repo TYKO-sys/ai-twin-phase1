@@ -190,6 +190,94 @@ else
 fi
 
 # ------------------------------------------------------------
+# 6.5. Optional: n8n self-hosting (FREE alternative to n8n.cloud)
+# ------------------------------------------------------------
+print_step "Optional: n8n self-hosting"
+
+echo ""
+echo -e "${CYAN}n8n.cloud now requires payment. You can self-host n8n on this phone${NC}"
+echo -e "${CYAN}for free, OR use the twin's built-in tools for email/calendar/RSS.${NC}"
+echo ""
+echo "The twin has native tools for:"
+echo "  - send_email (via SMTP — free with Gmail App Passwords)"
+echo "  - create_calendar_event (.ics files — works with any calendar app)"
+echo "  - read_rss (news, blogs, YouTube, podcasts)"
+echo "  - shorten_url (free is.gd/v.gd API)"
+echo ""
+echo -e "${YELLOW}Self-hosting n8n gives you 400+ integrations (Slack, Sheets, Discord, etc.)${NC}"
+echo -e "${YELLOW}but uses ~400MB extra storage and ~300MB RAM while running.${NC}"
+echo ""
+read -p "Install n8n + ngrok for self-hosted automation? (y/N) " INSTALL_N8N
+
+if [[ "$INSTALL_N8N" == "y" || "$INSTALL_N8N" == "Y" ]]; then
+    print_step "Installing Node.js + n8n + ngrok (5-10 minutes)"
+
+    # Node.js
+    pkg install -y nodejs-lts >/dev/null 2>&1 || pkg install -y nodejs >/dev/null 2>&1
+    if command -v node &>/dev/null; then
+        print_ok "Node.js: $(node --version)"
+    else
+        print_warn "Node.js install failed — n8n step skipped. See N8N_SELFHOST_GUIDE.md"
+    fi
+
+    # n8n
+    if command -v node &>/dev/null; then
+        npm install -g n8n >/dev/null 2>&1
+        if command -v n8n &>/dev/null; then
+            print_ok "n8n: $(n8n --version)"
+        else
+            print_warn "n8n install failed — see N8N_SELFHOST_GUIDE.md for manual steps"
+        fi
+    fi
+
+    # ngrok (ARM64 binary)
+    NGROK_BIN="$PREFIX/bin/ngrok"
+    if [[ ! -x "$NGROK_BIN" ]]; then
+        curl -sL -o /tmp/ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.zip 2>/dev/null
+        if [[ -f /tmp/ngrok.zip ]]; then
+            unzip -o /tmp/ngrok.zip -d /tmp/ >/dev/null 2>&1
+            mv /tmp/ngrok "$NGROK_BIN" 2>/dev/null && chmod +x "$NGROK_BIN"
+            rm -f /tmp/ngrok.zip
+            print_ok "ngrok installed"
+        else
+            print_warn "ngrok download failed — see N8N_SELFHOST_GUIDE.md"
+        fi
+    else
+        print_ok "ngrok already installed"
+    fi
+
+    # n8n basic config
+    mkdir -p "$HOME/.n8n"
+    if [[ ! -f "$HOME/.n8n/.env" ]]; then
+        cat > "$HOME/.n8n/.env" <<'N8NENV'
+N8N_HOST=localhost
+N8N_PORT=5678
+N8N_PROTOCOL=http
+N8N_DIAGNOSTICS_ENABLED=false
+N8N_PERSONALIZATION_ENABLED=false
+N8N_BASIC_AUTH_ACTIVE=true
+N8N_BASIC_AUTH_USER=admin
+N8N_BASIC_AUTH_PASSWORD=change-this-password
+N8NENV
+        print_ok "n8n config created at ~/.n8n/.env"
+        print_warn "EDIT ~/.n8n/.env to change the admin password before first run"
+    fi
+
+    echo ""
+    echo -e "${GREEN}${BOLD}n8n setup complete. To use it:${NC}"
+    echo "  1. Sign up for ngrok: https://dashboard.ngrok.com/signup"
+    echo "  2. Set your token:   ngrok config add-authtoken YOUR_TOKEN"
+    echo "  3. Start n8n:         tmux new-session -d -s n8n 'n8n start'"
+    echo "  4. Start ngrok:       tmux new-session -d -s ngrok 'ngrok http 5678'"
+    echo "  5. Open editor at:    http://localhost:5678"
+    echo ""
+    echo "  Full guide: N8N_SELFHOST_GUIDE.md"
+else
+    print_ok "Skipping n8n — twin has native email/calendar/RSS tools"
+    echo "  You can install n8n later — see N8N_SELFHOST_GUIDE.md"
+fi
+
+# ------------------------------------------------------------
 # 7. Acquire wakelock
 # ------------------------------------------------------------
 print_step "Acquiring wakelock"

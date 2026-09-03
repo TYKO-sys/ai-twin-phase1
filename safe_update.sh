@@ -159,6 +159,7 @@ CODE_FILES=(
     "summarizer.py"
     "tools.py"
     "wizard.py"
+    "diagnostic.py"
     "system_prompt.txt"
     "requirements.txt"
     "models_config.json"
@@ -167,9 +168,11 @@ CODE_FILES=(
     "install.sh"
     "start.sh"
     "keep_alive_setup.sh"
+    "hook_up.sh"
     "README.md"
     "USER_GUIDE.md"
     "TROUBLESHOOTING.md"
+    "N8N_SELFHOST_GUIDE.md"
     ".env.example"
 )
 

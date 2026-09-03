@@ -328,9 +328,9 @@ class MultiProviderClient:
         # Get all available API keys
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        freellmapi_key = os.environ.get("FREELLMAPI_API_KEY", "").strip()
         mistral_key = os.environ.get("MISTRAL_API_KEY", "").strip()
         cerebras_key = os.environ.get("CEREBRAS_API_KEY", "").strip()
-        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
         zai_key = os.environ.get("ZAI_API_KEY", "").strip()
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -338,16 +338,16 @@ class MultiProviderClient:
         if _mm:
             provider_order = _mm.get_provider_order()
         else:
-            provider_order = ["groq", "openrouter", "mistral", "cerebras", "zai", "gemini"]
+            provider_order = ["groq", "openrouter", "freellmapi", "mistral", "cerebras", "zai", "gemini"]
 
         # Map provider names to their API keys
         key_map = {
             "groq": groq_key,
             "openrouter": openrouter_key,
+            "freellmapi": freellmapi_key or "free",  # FreeLLMAPI is free, no key needed — use "free" as placeholder
             "mistral": mistral_key,
             "cerebras": cerebras_key,
             "zai": zai_key,
-            "deepseek": deepseek_key,
             "gemini": gemini_key,
         }
 
@@ -369,10 +369,10 @@ class MultiProviderClient:
             defaults = {
                 "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
                 "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free"),
+                "freellmapi": ("https://freellmapi.tashfeenahmed.repl.co/v1", "auto"),
                 "mistral": ("https://api.mistral.ai/v1", "mistral-small-latest"),
-                "cerebras": ("https://api.cerebras.ai/v1", "llama3.1-8b-8192"),
+                "cerebras": ("https://api.cerebras.ai/v1", "gemma-4-31b"),
                 "zai": ("https://api.z.ai/api/paas/v4", "glm-4-flash"),
-                "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
             }
 
             default_url, default_model = defaults.get(p_name, ("", ""))

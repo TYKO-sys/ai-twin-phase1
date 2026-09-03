@@ -163,6 +163,7 @@ CODE_FILES=(
     "requirements.txt"
     "models_config.json"
     "SETUP_GUIDE.html"
+    "PROJECT_ARCHITECTURE.md"
     "install.sh"
     "start.sh"
     "keep_alive_setup.sh"

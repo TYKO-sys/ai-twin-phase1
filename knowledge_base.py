@@ -3,36 +3,12 @@ knowledge_base.py
 =================
 The twin's structured understanding of the user.
 
-Instead of storing raw conversation logs and truncating them (which loses
-important context from long conversations), the twin maintains a knowledge
-base — multiple files, each capturing a different domain of understanding.
-
-The knowledge base is:
-- DISTILLED: Captures meaning, not events. "User is avoiding the surgeon
-  call because it triggers anxiety about surgery failure" not "user said
-  they need to call the surgeon."
-- CUMULATIVE: Each update considers the previous version. The twin builds
-  on what it already knows.
-- STRUCTURED: Each domain has a clear purpose. No duplication.
-- DATED: Uses absolute dates everywhere. No relative dates that expire.
-- SMALL: All domains combined are ~2000 tokens. Efficient.
-
-Domains:
-1. identity.md       — Who they are at their core
-2. situation.md       — Current life circumstances
-3. tasks.md          — What needs doing (with dates, priorities, why)
-4. relationships.md  — Key people and dynamics
-5. patterns.md       — Behavioral patterns observed over time
-6. completed.md      — What's been done (progress tracking)
-7. upcoming.md       — What's coming (calendar with context)
-8. insights.md       — Deep understanding — the "why" behind things
-
-Update process:
-- After conversations, the twin analyzes what was said
-- It reads each knowledge domain's current content
-- It generates an updated version that preserves truth, adds new info,
-  removes what's done or outdated
-- Each update considers the previous version (cumulative, not from scratch)
+FIXED VERSION — addresses 5 critical problems:
+1. Infinite growth → Each domain has a HARD MAX. Old entries removed.
+2. Redundancy → Each domain has a UNIQUE PURPOSE. No overlap.
+3. Single-occurrence assumptions → Patterns require 3+ observations.
+4. Overly literal WHATs → Domains capture WHYs and understanding, not events.
+5. Third person → All content written in second person ("you").
 """
 
 from __future__ import annotations
@@ -46,113 +22,143 @@ log = logging.getLogger("knowledge_base")
 
 KNOWLEDGE_DIR = Path.home() / "ai-twin-memory" / "knowledge"
 
-# Domain definitions: (filename, what it captures, update prompt)
+# Domain definitions: (filename, what it captures, update prompt, max_chars)
+# max_chars is a HARD LIMIT. The LLM is told to stay under it.
+# This prevents infinite growth.
 DOMAINS = [
-    ("identity.md", "who they are at their core — values, beliefs, personality, what defines them as a person",
-     """Update your understanding of who this person IS at their core.
+    ("identity.md",
+     "who TYKO is at their core",
+     """Update your understanding of who TYKO IS at their core.
 
-Consider:
-- What values drive their decisions?
-- What beliefs shape how they see the world?
-- What personality traits keep showing up?
-- What defines them beyond their current situation?
+This is about WHO they are, not WHAT happened to them.
 
-Keep what's still true. Add new insights about who they are. Remove anything
-that was a temporary state mistaken for a trait. Deepen your understanding.
-Use 2-4 sentences. This is about essence, not events."""),
+RULES:
+- Keep only traits that have shown up CONSISTENTLY across multiple days, not single occurrences.
+- If something was observed only once, do NOT include it as a trait. One bad day doesn't define someone.
+- Remove traits that no longer seem accurate.
+- Write in second person: "You are..." not "They are..."
+- MAXIMUM 3 sentences. No more. This is the essence, not a biography.
+- If nothing changed about their core identity, keep the existing text and just update the date.
 
-    ("situation.md", "current life circumstances — health, legal, financial, housing, what they're dealing with right now",
-     """Update your understanding of their current life situation.
+Write the updated identity now:""",
+     500),  # ~125 tokens — strict limit
 
-Consider:
-- What are they dealing with RIGHT NOW? (health, legal, financial, housing)
-- What's the status of each major situation?
-- What changed since the last update?
+    ("situation.md",
+     "current life circumstances — what TYKO is dealing with RIGHT NOW",
+     """Update the current situation.
 
-Use ABSOLUTE DATES. Write "as of September 1" not "currently."
-Remove anything that's resolved or no longer relevant.
-Keep this to 4-6 bullet points. Specific, not vague."""),
+RULES:
+- Only include things that are ACTIVE and CURRENT. If something is resolved, REMOVE it.
+- Do NOT duplicate information from other domains. This is for SITUATIONS only, not tasks or relationships.
+- Use absolute dates. Write "as of September 2" not "currently."
+- Each bullet should be 1 line max. No paragraphs.
+- MAXIMUM 6 bullets. If you have more, drop the least important.
+- Remove anything that was resolved since the last update.
+- Write in second person: "You are dealing with..." not "They are..."
 
-    ("tasks.md", "what needs doing — with absolute dates, priorities, and WHY each matters",
-     """Update the task list.
+Write the updated situation now:""",
+     800),  # ~200 tokens
 
-For each task:
-- What needs to happen?
-- When is it due? (absolute date, not "tomorrow")
-- Why does it matter? (what happens if it doesn't get done)
-- What's the status? (not started, in progress, blocked, overdue)
+    ("tasks.md",
+     "what needs doing — ACTIVE tasks only",
+     """Update the task list. ACTIVE TASKS ONLY.
 
-Remove completed tasks (they go in completed.md).
-Add new tasks that came up today.
-Update statuses of existing tasks.
-If a deadline passed, mark it OVERDUE.
-Keep each task to 1-2 lines. Prioritize by urgency."""),
+RULES:
+- If a task was COMPLETED today, REMOVE it from this list. It goes to completed.md.
+- If a task was completed in a PREVIOUS update, it should already be gone. Do not re-add it.
+- Each task: ONE LINE. Format: "Task — due [date] — [status]"
+- Do NOT include task history, context, or background. Just the task, date, and status.
+- Statuses: pending, blocked, overdue. NOT "in progress" or "following up."
+- MAXIMUM 8 tasks. If you have more, drop the least urgent.
+- Remove tasks that are no longer relevant.
+- Do NOT duplicate tasks that appear in upcoming.md.
+- Write in second person.
 
-    ("relationships.md", "key people in their life — who they are, what they mean, what's unresolved",
-     """Update your understanding of the key people in their life.
+Write the updated task list now:""",
+     600),  # ~150 tokens
 
-For each person:
-- Who are they? (name, role, relationship)
-- What's the dynamic? (supportive, tense, complicated, estranged)
-- What's unresolved? (what needs to happen with this person?)
+    ("relationships.md",
+     "key people — who they are and what's unresolved",
+     """Update the key people.
 
-Add new people mentioned today. Update dynamics that shifted.
-Remove people who are no longer relevant.
-Keep each person to 1-2 lines."""),
+RULES:
+- Only include people who are ACTIVELY RELEVANT to current situations.
+- If a person is no longer relevant, REMOVE them.
+- Each person: ONE LINE. Format: "Name — role — [dynamic] — [what's unresolved]"
+- Do NOT include contact info, phone numbers, or fax numbers. That goes in tasks.
+- Do NOT duplicate relationship info that appears in situation.md.
+- MAXIMUM 6 people.
+- Write in second person: "Your relationship with..."
 
-    ("patterns.md", "behavioral patterns observed over time — both helpful and unhelpful",
-     """Update the patterns you've noticed over time.
+Write the updated relationships now:""",
+     500),  # ~125 tokens
 
-Consider:
-- What behaviors keep showing up? (avoidance, overcommitment, isolation, etc.)
-- What triggers these patterns?
-- What helps break unhelpful patterns?
-- What patterns are they not aware of?
+    ("patterns.md",
+     "behavioral patterns — observed 3+ times minimum",
+     """Update behavioral patterns.
 
-Only include patterns you've observed MULTIPLE TIMES, not one-offs.
-Add new patterns noticed today. Update existing patterns with new evidence.
-Remove patterns that no longer apply.
-Be honest. This is for them, not about them."""),
+CRITICAL RULE:
+- A pattern must be observed AT LEAST 3 TIMES across different days to be included.
+- ONE occurrence is NOT a pattern. If you've only seen something once, do NOT add it.
+- If a pattern was based on only 1-2 observations, REMOVE it.
+- Patterns are about HOW you approach things, not WHAT happened.
 
-    ("completed.md", "what they've gotten done — progress tracking, not just task completion",
-     """Update the record of what they've accomplished.
+RULES:
+- MAXIMUM 5 patterns. Remove the least relevant if you have more.
+- Each pattern: ONE sentence describing the behavior + ONE sentence on what helps.
+- Do NOT include triggers, evidence lists, or detailed analysis. Just the pattern.
+- Remove patterns that no longer apply.
+- Write in second person: "You tend to..." not "The user tends to..."
 
-Consider:
-- What tasks were completed?
-- What progress was made (even partial)?
-- What difficult things did they face?
-- What should be celebrated?
+Write the updated patterns now:""",
+     500),  # ~125 tokens
 
-Add new completions from today. Keep previous entries.
-This is a WIN file. Track progress, not just checkbox items.
-Keep it to bullet points with dates."""),
+    ("completed.md",
+     "recent wins — what got done in the last 7 days only",
+     """Update the completed items.
 
-    ("upcoming.md", "what's coming — calendar with context, not just dates",
+RULES:
+- Only include items completed in the LAST 7 DAYS. Anything older gets REMOVED.
+- Each item: ONE LINE. "Date — what was done."
+- No paragraphs. No context. No analysis. Just the date and the action.
+- MAXIMUM 8 items. This is a recent wins list, not a history book.
+- Remove anything older than 7 days.
+- Write in second person: "You completed..."
+
+Write the updated completed list now:""",
+     500),  # ~125 tokens
+
+    ("upcoming.md",
+     "what's coming — events within the next 30 days",
      """Update the upcoming events calendar.
 
-For each upcoming item:
-- What's happening? (appointment, deadline, court date, etc.)
-- When? (absolute date and time)
-- What needs to happen before then?
-- Why does it matter?
+RULES:
+- Only events within the NEXT 30 DAYS. Anything past that gets removed.
+- Each event: "Date — event name — time — [what needs to happen before then]"
+- Do NOT include events that already passed.
+- Do NOT duplicate tasks from tasks.md.
+- MAXIMUM 5 events.
+- Remove events that already happened.
+- Write in second person: "You have..."
 
-Add new items mentioned today. Remove items that passed.
-Sort by date, soonest first.
-Only include things within the next 30 days."""),
+Write the updated upcoming list now:""",
+     500),  # ~125 tokens
 
-    ("insights.md", "deep understanding — the why behind patterns, the connections between domains",
-     """Update your deep insights about this person.
+    ("insights.md",
+     "deep understanding — the why behind things",
+     """Update your deep insights.
 
-Consider:
-- What connections do you see between their identity, situation, and patterns?
-- What are they not seeing about themselves?
-- What's the deeper story behind what they're going through?
-- What would help them most right now?
+RULES:
+- This is your highest-level understanding. Not facts — wisdom.
+- Write in SECOND PERSON: "You are..." not "They are..."
+- MAXIMUM 3 sentences. No more.
+- If an insight is no longer accurate, REPLACE it. Don't accumulate.
+- Previous insights that are still true should be KEPT, not rewritten.
+- Outdated insights should be REMOVED, not stacked.
+- Do NOT repeat information from other domains. This is synthesis, not summary.
 
-This is your highest-level understanding. Not facts — wisdom.
-Be honest. Be specific. Be brief. 3-5 sentences max.
-Previous insights that are still true should be kept and deepened.
-Outdated insights should be replaced, not accumulated."""),
+Write the updated insights now:""",
+     400),  # ~100 tokens
 ]
 
 
@@ -163,8 +169,7 @@ class KnowledgeBase:
         self.dir = knowledge_dir or KNOWLEDGE_DIR
         self.dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize any missing domain files
-        for filename, description, _ in DOMAINS:
+        for filename, description, _, _ in DOMAINS:
             path = self.dir / filename
             if not path.exists():
                 path.write_text(
@@ -173,12 +178,10 @@ class KnowledgeBase:
                 )
 
     def get_domain(self, filename: str) -> str:
-        """Read a single knowledge domain."""
         path = self.dir / filename
         if not path.exists():
             return ""
         content = path.read_text(encoding="utf-8")
-        # Skip placeholder content
         if "not yet known" in content:
             return ""
         return content
@@ -186,19 +189,21 @@ class KnowledgeBase:
     def get_all_knowledge(self) -> str:
         """Get all knowledge domains formatted for context.
 
-        This is what the twin reads before responding. Small, dense, meaningful.
+        Total target: under 1500 tokens (~6000 chars).
         """
         now = datetime.now()
         date_anchor = now.strftime("%A, %B %d, %Y at %I:%M %p")
 
         parts = [f"# CURRENT MOMENT\nIt is {date_anchor}.\n"]
 
-        for filename, description, _ in DOMAINS:
+        for filename, description, _, max_chars in DOMAINS:
             content = self.get_domain(filename)
             if content:
-                # Clean up the header
+                # Enforce hard limit
+                if len(content) > max_chars:
+                    content = content[:max_chars] + "\n"
+                # Clean up header
                 lines = content.strip().splitlines()
-                # Skip the first line (our auto-generated header)
                 if lines and lines[0].startswith("# "):
                     lines = lines[1:]
                 clean = "\n".join(lines).strip()
@@ -211,65 +216,60 @@ class KnowledgeBase:
     def update_all(self, llm_client, system_prompt: str, conversation_log: str) -> dict:
         """Update all knowledge domains based on recent conversations.
 
-        Each domain is updated independently, considering its previous content
-        and the new conversation. This is cumulative — each update builds on
-        the last.
-
-        Args:
-            llm_client: The LLM client
-            system_prompt: The twin's system prompt
-            conversation_log: Today's conversation log
-
-        Returns:
-            Dict of {filename: updated_content}
+        Each domain is updated independently with strict size limits.
         """
         now = datetime.now().strftime("%Y-%m-%d at %H:%M")
         results = {}
 
-        for filename, description, update_prompt in DOMAINS:
+        for filename, description, update_prompt, max_chars in DOMAINS:
             current = self.get_domain(filename)
 
-            # Skip if no conversation and no existing content
             if not conversation_log and not current:
                 continue
 
+            # Include the max_chars limit in the prompt
             prompt = f"""{update_prompt}
 
 # CURRENT DATE AND TIME
 It is {now}.
 
-# WHAT YOU ALREADY KNOW (previous version of this domain)
+# WHAT YOU ALREADY KNOW (previous version — read carefully)
 
-{current if current else '_(empty — this is the first update)_'}
+{current if current else '_(empty — first update)_'}
 
 # TODAY'S CONVERSATIONS
 
-{conversation_log if conversation_log else '_(no conversations today — just refresh dates and statuses if needed)_'}
+{conversation_log if conversation_log else '_(no new conversations — just refresh dates and remove outdated items)_'}
 
-# YOUR TASK
+# REMINDER
+- This domain must be UNDER {max_chars} characters. If the previous version is already at the limit, you MUST remove something to add new info.
+- Write in second person ("you"), never third person ("they").
+- Do NOT repeat information that belongs in other domains.
+- Single occurrences are NOT patterns or traits.
 
-Update this knowledge domain. Read what you already knew, read what happened today, and produce the updated content. Keep what's still true. Add what's new. Remove what's done or outdated. Use absolute dates.
-
-Output ONLY the updated content for this domain. No preamble, no explanation. Just the content:"""
+Output ONLY the updated content for this domain. No preamble:"""
 
             try:
                 updated = llm_client.generate(
                     prompt=prompt,
-                    system_instruction="You are updating your own knowledge of someone you know well. Be accurate, specific, honest, and brief.",
+                    system_instruction="You are updating your own knowledge of someone you know well. Be accurate, specific, honest, and brief. Write in second person.",
                 )
 
                 if updated and len(updated) > 20:
-                    # Clean up the response
                     cleaned = updated.strip()
-                    # Remove any preamble the model might add
+                    # Remove preamble
                     if "# " in cleaned and not cleaned.startswith("# "):
                         idx = cleaned.index("# ")
                         cleaned = cleaned[idx:]
 
+                    # HARD ENFORCEMENT of max_chars
+                    if len(cleaned) > max_chars:
+                        cleaned = cleaned[:max_chars].rsplit('\n', 1)[0] + "\n"
+
                     path = self.dir / filename
                     path.write_text(cleaned + "\n", encoding="utf-8")
                     results[filename] = len(cleaned)
-                    log.info(f"Updated {filename} ({len(cleaned)} chars)")
+                    log.info(f"Updated {filename} ({len(cleaned)}/{max_chars} chars)")
                 else:
                     log.warning(f"Update for {filename} too short, keeping current")
                     results[filename] = 0
@@ -280,20 +280,20 @@ Output ONLY the updated content for this domain. No preamble, no explanation. Ju
         return results
 
     def get_status(self) -> str:
-        """Get a status summary for debugging."""
         lines = ["Knowledge Base Status:"]
         total_chars = 0
-        for filename, description, _ in DOMAINS:
+        for filename, description, _, max_chars in DOMAINS:
             content = self.get_domain(filename)
             chars = len(content) if content else 0
             total_chars += chars
+            pct = (chars / max_chars * 100) if max_chars > 0 else 0
             status = "✓" if chars > 50 else "○"
-            lines.append(f"  {status} {filename} ({chars} chars)")
+            over = " ⚠️ OVER LIMIT" if chars > max_chars else ""
+            lines.append(f"  {status} {filename} ({chars}/{max_chars} chars, {pct:.0f}%){over}")
         lines.append(f"  Total: {total_chars} chars (~{total_chars // 4} tokens)")
         return "\n".join(lines)
 
 
-# Singleton
 _kb = None
 
 
@@ -302,12 +302,3 @@ def get_knowledge_base() -> KnowledgeBase:
     if _kb is None:
         _kb = KnowledgeBase()
     return _kb
-
-
-if __name__ == "__main__":
-    kb = KnowledgeBase()
-    print("=== Knowledge Base ===")
-    print(kb.get_status())
-    print()
-    print("=== Full Knowledge for Context ===")
-    print(kb.get_all_knowledge()[:2000])

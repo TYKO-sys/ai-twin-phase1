@@ -410,31 +410,87 @@ print(tool_monitor_website(url='$MON_URL', watch_for='''$MON_WATCH'''))
 done
 
 # ------------------------------------------------------------
-# 7. RSS feeds
+# 7. RSS feeds — pre-curated for the user's life
 # ------------------------------------------------------------
 print_step "Step 7: RSS feed subscriptions"
 
-print_ask "Add RSS feeds for the twin to monitor? (y/N) "
+FEEDS_FILE="$MEM_DIR/rss_feeds.txt"
+mkdir -p "$MEM_DIR"
+
+print_ask "Subscribe to curated RSS feeds for your life (Baltimore, medical, Apple, AI, legal)? (Y/n) "
+read -r SEED_FEEDS
+SEED_FEEDS="${SEED_FEEDS:-Y}"
+
+if [[ "$SEED_FEEDS" == "y" || "$SEED_FEEDS" == "Y" ]]; then
+    # Pre-curated feeds for the user's actual life
+    cat > "$FEEDS_FILE" <<'FEEDS'
+# Curated RSS feeds for Michael's life
+# (Twin will AI-digest these into a daily morning briefing)
+
+# Baltimore local news
+https://feeds.baltimoresun.com/rss2/news
+https://www.baltimorecity.gov/rss-news
+
+# Health & medical research
+https://www.nih.gov/news-releases/rss
+https://www.fda.gov/news-events/press-announcements/rss
+
+# Apple ecosystem (setting up MacBook Pro + iPhone)
+https://9to5mac.com/feed/
+https://www.macrumors.com/feed/
+
+# AI tools & developments
+https://hnrss.org/frontpage
+https://techcrunch.com/category/artificial-intelligence/feed/
+
+# ADHD / executive function strategies
+https://www.additudemag.com/feed/
+
+# Legal / justice system news
+https://www.aclu.org/feed
+FEEDS
+    print_ok "Subscribed to 9 curated feeds"
+    echo "Feeds saved to: $FEEDS_FILE"
+    echo "Twin will digest these daily at 8am (configurable via DAILY_DIGEST_HOUR in .env)"
+    echo "Curated RSS feeds (Baltimore, medical, Apple, AI, legal) subscribed" >> "$REPORT"
+else
+    print_ok "Skipping feed seeding"
+    echo "Curated feed seeding skipped by user" >> "$REPORT"
+fi
+
+# Optional: ask for digest time
+print_ask "What time should the daily news digest arrive? (0-23, default 8) "
+read -r DIGEST_HOUR
+DIGEST_HOUR="${DIGEST_HOUR:-8}"
+
+# Validate and save to .env
+if [[ "$DIGEST_HOUR" =~ ^[0-9]+$ ]] && [[ "$DIGEST_HOUR" -ge 0 ]] && [[ "$DIGEST_HOUR" -le 23 ]]; then
+    if grep -q "^DAILY_DIGEST_HOUR=" "$AI_TWIN_DIR/.env" 2>/dev/null; then
+        sed -i "s|^DAILY_DIGEST_HOUR=.*|DAILY_DIGEST_HOUR=$DIGEST_HOUR|" "$AI_TWIN_DIR/.env"
+    else
+        echo "DAILY_DIGEST_HOUR=$DIGEST_HOUR" >> "$AI_TWIN_DIR/.env"
+    fi
+    print_ok "Daily digest will arrive at ${DIGEST_HOUR}:00"
+    echo "Daily digest time: ${DIGEST_HOUR}:00" >> "$REPORT"
+else
+    print_warn "Invalid time, keeping default 8am"
+fi
+
+print_ask "Add any custom RSS feeds? (y/N) "
 read -r DO_RSS
 
 while [[ "$DO_RSS" == "y" || "$DO_RSS" == "Y" ]]; do
-    read -p "RSS/Atom feed URL (e.g., https://hnrss.org/frontpage): " RSS_URL
+    read -p "RSS/Atom feed URL: " RSS_URL
     if [[ -n "$RSS_URL" ]]; then
         # Test fetch
         python -c "
 import sys; sys.path.insert(0, '.')
 from tools import tool_read_rss
 print(tool_read_rss(url='$RSS_URL', limit=2))
-" 2>&1 | head -20 | tee -a "$REPORT"
-        # Save to feeds file (the twin reads this on startup)
-        FEEDS_FILE="$MEM_DIR/rss_feeds.txt"
-        if ! grep -q "^$RSS_URL$" "$FEEDS_FILE" 2>/dev/null; then
-            echo "$RSS_URL" >> "$FEEDS_FILE"
-            print_ok "Subscribed to $RSS_URL"
-            echo "RSS feed added: $RSS_URL" >> "$REPORT"
-        else
-            print_warn "Already subscribed to $RSS_URL"
-        fi
+" 2>&1 | head -10
+        echo "$RSS_URL" >> "$FEEDS_FILE"
+        print_ok "Subscribed to $RSS_URL"
+        echo "RSS feed added: $RSS_URL" >> "$REPORT"
     fi
     print_ask "Add another feed? (y/N) "
     read -r DO_RSS

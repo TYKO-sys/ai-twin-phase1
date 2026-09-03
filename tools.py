@@ -209,7 +209,9 @@ TOOL_DEFINITIONS = [
         "name": "create_task",
         "description": (
             "Add a task to the task list. Tasks are stored persistently "
-            "and can be listed and completed later."
+            "and can be listed and completed later. Supports GTD-style "
+            "status (active/blocked/waiting/someday/done), next-action, "
+            "energy level, and context tags for the smart suggestion engine."
         ),
         "parameters": {
             "type": "object",
@@ -218,21 +220,109 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Short title of the task"
                 },
-                "details": {
-                    "type": "string",
-                    "description": "Optional longer description"
-                },
                 "priority": {
                     "type": "string",
-                    "description": "Priority: 'high', 'medium', or 'low' (default: medium)",
-                    "enum": ["high", "medium", "low"]
+                    "description": "Priority: 'urgent', 'high', 'medium', or 'low' (default: medium)",
+                    "enum": ["urgent", "high", "medium", "low"]
+                },
+                "status": {
+                    "type": "string",
+                    "description": "GTD status: 'active' (can do now), 'blocked' (waiting on something), 'waiting' (someone else action), 'someday' (not now), 'done' (default: active)",
+                    "enum": ["active", "blocked", "waiting", "someday", "done"]
+                },
+                "blocked_on": {
+                    "type": "string",
+                    "description": "What the task is waiting for (free text, e.g. 'Dr. Lu reply via MyChart', 'Apple order shipping'). Required when status=blocked or waiting."
+                },
+                "next_action": {
+                    "type": "string",
+                    "description": "The literal next physical step. 'Set up Apple devices' is a project; 'Open the MacBook box and plug it in to charge' is a task."
+                },
+                "energy": {
+                    "type": "string",
+                    "description": "Focus/energy required: 'low', 'medium', 'high' (default: medium)",
+                    "enum": ["low", "medium", "high"]
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Comma-separated list of contexts where this can be done: 'home', 'phone', 'errands', 'computer', 'anywhere' (default: anywhere). Example: 'home,computer'"
                 },
                 "due_date": {
                     "type": "string",
                     "description": "Optional due date (YYYY-MM-DD format)"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional free-text category (e.g., 'medical', 'legal', 'apple-setup', 'personal', 'work')"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional longer notes/details about the task"
                 }
             },
             "required": ["title"]
+        }
+    },
+    {
+        "name": "task_review",
+        "description": (
+            "Smart task suggestion engine. Pure logic (no LLM tokens). "
+            "Reads current time + day of week, surfaces blocked/waiting "
+            "tasks, and picks 1-3 active tasks doable now based on energy, "
+            "context, and time of day. Use whenever the user mentions "
+            "tasks or seems stuck."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "news_digest",
+        "description": (
+            "Pull all subscribed RSS feeds from ~/ai-twin-memory/rss_feeds.txt "
+            "and return aggregated raw items (title + link + description + "
+            "pubDate + source_feed) for AI digestion. The twin's LLM then "
+            "writes a 4-6 sentence friend-style digest with no URLs, customized "
+            "to the user's life (Baltimore, medical, Apple, AI, legal)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "feeds_file": {
+                    "type": "string",
+                    "description": "Optional path to feeds file (default: ~/ai-twin-memory/rss_feeds.txt)"
+                },
+                "limit_per_feed": {
+                    "type": "integer",
+                    "description": "Max items per feed (default 5, max 10)"
+                }
+            }
+        }
+    },
+    {
+        "name": "scrape_website",
+        "description": (
+            "Scrape a website with anti-bot handling (rotating user agents, "
+            "proper headers, session cookies) and content extraction. "
+            "Better than read_url for news sites, portals, JS-heavy pages. "
+            "Returns the main article text (readability heuristic: biggest "
+            "text block), page title, meta description, and optionally all links. "
+            "Falls back to read_url if lxml is unavailable or parsing fails."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to scrape"
+                },
+                "extract_links": {
+                    "type": "boolean",
+                    "description": "If true, also extract all links from the page (default: false)"
+                }
+            },
+            "required": ["url"]
         }
     },
     {
@@ -910,84 +1000,235 @@ def _save_tasks(tasks: list) -> None:
     )
 
 
-def tool_create_task(title: str, details: str = "", priority: str = "medium",
-                     due_date: str = "") -> str:
-    """Add a task to the task list."""
+def tool_create_task(title: str, priority: str = "medium",
+                     status: str = "active", blocked_on: str = "",
+                     next_action: str = "", energy: str = "medium",
+                     context: str = "anywhere", due_date: str = "",
+                     category: str = "", notes: str = "",
+                     details: str = "") -> str:
+    """Add a task to the task list with GTD-style fields.
+
+    New fields:
+      status:      active | blocked | waiting | someday | done (default: active)
+      blocked_on:  free text — what it's waiting on (for blocked/waiting)
+      next_action: the literal next physical step (GTD-style)
+      energy:      low | medium | high — focus required
+      context:     comma-separated string ('home,phone') -> list of context tags
+      category:    free-text category
+      notes:       longer notes (replaces the legacy 'details' field)
+      details:     legacy alias for notes (kept for backward compatibility)
+
+    Existing tasks with completed=True are treated as status='done' by the
+    readers. Old 'details' fields are surfaced as 'notes' on read.
+    """
     try:
+        # Normalize context string -> list
+        if isinstance(context, str):
+            ctx_list = [c.strip() for c in context.split(",") if c.strip()]
+        elif context:
+            ctx_list = list(context)
+        else:
+            ctx_list = ["anywhere"]
+        if not ctx_list:
+            ctx_list = ["anywhere"]
+
+        # Validate status
+        valid_statuses = {"active", "blocked", "waiting", "someday", "done"}
+        if status not in valid_statuses:
+            status = "active"
+
+        # Validate energy
+        valid_energies = {"low", "medium", "high"}
+        if energy not in valid_energies:
+            energy = "medium"
+
+        # Normalize priority (accept 'urgent' as alias for 'high')
+        if priority == "urgent":
+            priority = "high"
+        if priority not in {"high", "medium", "low"}:
+            priority = "medium"
+
+        # Notes: prefer new 'notes' field, fall back to legacy 'details'
+        if not notes and details:
+            notes = details
+
         tasks = _load_tasks()
+        # Generate a stable, monotonically-increasing id (don't reuse old ids)
+        new_id = max([t.get("id", 0) for t in tasks] + [0]) + 1
+
+        now_iso = datetime.now().isoformat()
         task = {
-            "id": len(tasks) + 1,
+            "id": new_id,
             "title": title,
-            "details": details,
             "priority": priority,
-            "due_date": due_date,
-            "created": datetime.now().isoformat(),
-            "completed": False,
-            "completed_at": None,
+            "status": status,
+            "blocked_on": blocked_on or "",
+            "next_action": next_action or "",
+            "energy": energy,
+            "context": ctx_list,
+            "due_date": due_date or "",
+            "category": category or "",
+            "notes": notes or "",
+            # Legacy fields kept for backward compatibility with older readers
+            "details": notes or "",
+            "created_at": now_iso,
+            "created": now_iso,  # legacy alias
+            "completed": status == "done",
+            "completed_at": now_iso if status == "done" else None,
         }
         tasks.append(task)
         _save_tasks(tasks)
 
         result = f"Task created: {title}"
         if priority == "high":
-            result += f" (HIGH priority)"
+            result += " [HIGH priority]"
+        if status != "active":
+            result += f" (status: {status})"
+            if blocked_on:
+                result += f" — blocked on: {blocked_on}"
+        if next_action:
+            result += f"\nNext action: {next_action}"
         if due_date:
-            result += f" — due {due_date}"
+            result += f"\nDue: {due_date}"
+        if ctx_list and ctx_list != ["anywhere"]:
+            result += f"\nContext: {', '.join(ctx_list)}"
+        if energy != "medium":
+            result += f"\nEnergy: {energy}"
         return result
     except Exception as e:
         return f"Task creation failed: {type(e).__name__}: {e}"
 
 
 def tool_list_tasks(include_completed: bool = False) -> str:
-    """Show all pending tasks, sorted by priority and due date."""
+    """Show all tasks, grouped by status, sorted by priority then due date.
+
+    Groups: active first, then blocked, waiting, then someday. Done tasks
+    only appear if include_completed=true. Shows next_action and blocked_on
+    when present.
+    """
     try:
         tasks = _load_tasks()
+        if not tasks:
+            return "No tasks yet. You're all caught up."
+
+        # Backward-compat: derive status from 'completed' for old tasks
+        def _status(t):
+            s = t.get("status", "")
+            if not s:
+                if t.get("completed") is True:
+                    return "done"
+                return "active"
+            return s
+        for t in tasks:
+            t["status"] = _status(t)
 
         if not include_completed:
-            tasks = [t for t in tasks if not t["completed"]]
+            tasks = [t for t in tasks if t["status"] != "done"]
 
         if not tasks:
             return "No pending tasks. You're all caught up."
 
-        # Sort by priority (high > medium > low), then by due date
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        tasks.sort(key=lambda t: (
-            priority_order.get(t.get("priority", "medium"), 1),
-            t.get("due_date", "9999-12-31")
-        ))
+        priority_order = {"high": 0, "urgent": 0, "medium": 1, "low": 2}
 
-        lines = [f"Tasks ({len(tasks)} pending):"]
-        for i, task in enumerate(tasks):
-            status = "✓" if task["completed"] else "○"
-            line = f"{i+1}. [{status}] {task['title']}"
-            if task.get("priority") == "high":
-                line += " [HIGH]"
-            if task.get("due_date"):
-                line += f" — due {task['due_date']}"
-            if task.get("details"):
-                line += f"\n   {task['details']}"
-            lines.append(line)
+        def sort_key(t):
+            return (
+                priority_order.get(t.get("priority", "medium"), 1),
+                t.get("due_date") or "9999-12-31",
+            )
 
-        return "\n".join(lines)
+        def _ctx_list(t):
+            ctx = t.get("context", ["anywhere"])
+            if isinstance(ctx, str):
+                ctx = [c.strip() for c in ctx.split(",") if c.strip()]
+            if not ctx:
+                ctx = ["anywhere"]
+            return ctx
+
+        groups = {"active": [], "blocked": [], "waiting": [], "someday": []}
+        extras = []
+        for t in tasks:
+            s = t["status"]
+            if s in groups:
+                groups[s].append(t)
+            else:
+                extras.append(t)
+
+        lines = []
+        first = True
+
+        def render_group(name, items):
+            nonlocal first
+            if not items:
+                return
+            if first:
+                lines.append(f"=== {name.upper()} ({len(items)}) ===")
+                first = False
+            else:
+                lines.append(f"\n=== {name.upper()} ({len(items)}) ===")
+            for t in sorted(items, key=sort_key):
+                ctx = _ctx_list(t)
+                line = f"  • {t['title']}"
+                if t.get("priority") in ("high", "urgent"):
+                    line += " [HIGH]"
+                if t.get("due_date"):
+                    line += f" — due {t['due_date']}"
+                line += (
+                    f"  (status: {t['status']}, "
+                    f"energy: {t.get('energy', 'medium')})"
+                )
+                if ctx != ["anywhere"]:
+                    line += f"  @{','.join(ctx)}"
+                lines.append(line)
+                if t.get("next_action"):
+                    lines.append(f"    Next action: {t['next_action']}")
+                if t.get("blocked_on"):
+                    lines.append(f"    Blocked on: {t['blocked_on']}")
+                notes = t.get("notes") or t.get("details") or ""
+                if notes:
+                    lines.append(f"    Notes: {notes}")
+
+        for grp_name in ("active", "blocked", "waiting", "someday"):
+            render_group(grp_name, groups[grp_name])
+        # Render any leftover statuses (e.g. unknown) under their own heading
+        if extras:
+            render_group("other", extras)
+
+        return "\n".join(lines) if lines else "No pending tasks. You're all caught up."
     except Exception as e:
         return f"List tasks failed: {type(e).__name__}: {e}"
 
 
 def tool_complete_task(identifier: str) -> str:
-    """Mark a task as completed by title or index."""
+    """Mark a task as completed by title or index number.
+
+    Updates both the legacy 'completed' boolean and the new 'status' field
+    so old and new code paths stay in sync.
+    """
     try:
         tasks = _load_tasks()
 
-        # Try to match by index number
+        # Helper: is this task "open" (not done) by either field?
+        def _is_open(t):
+            s = t.get("status", "")
+            if s == "done":
+                return False
+            if s and s != "active":
+                # blocked/waiting/someday are technically open
+                return True
+            # No status or active — fall back to legacy 'completed'
+            return not t.get("completed", False)
+
+        # Try to match by index number (1-based, among OPEN tasks)
         try:
             idx = int(identifier) - 1
-            # Find the idx-th non-completed task
             count = 0
             for task in tasks:
-                if not task["completed"]:
+                if _is_open(task):
                     if count == idx:
+                        now_iso = datetime.now().isoformat()
                         task["completed"] = True
-                        task["completed_at"] = datetime.now().isoformat()
+                        task["completed_at"] = now_iso
+                        task["status"] = "done"
                         _save_tasks(tasks)
                         return f"Completed: {task['title']}"
                     count += 1
@@ -998,15 +1239,180 @@ def tool_complete_task(identifier: str) -> str:
         # Try to match by title (case-insensitive, partial match)
         identifier_lower = identifier.lower()
         for task in tasks:
-            if not task["completed"] and identifier_lower in task["title"].lower():
+            if _is_open(task) and identifier_lower in task["title"].lower():
+                now_iso = datetime.now().isoformat()
                 task["completed"] = True
-                task["completed_at"] = datetime.now().isoformat()
+                task["completed_at"] = now_iso
+                task["status"] = "done"
                 _save_tasks(tasks)
                 return f"Completed: {task['title']}"
 
         return f"No pending task matching '{identifier}' found."
     except Exception as e:
         return f"Complete task failed: {type(e).__name__}: {e}"
+
+
+def tool_task_review() -> str:
+    """Smart task suggestion engine. Pure logic, no LLM tokens.
+
+    Reads current time + day of week, identifies blocked/waiting tasks,
+    and picks 1-3 active tasks that can be done now based on:
+      - Time of day (morning = high energy, evening = low energy)
+      - Day of week (weekday = work OK, weekend = personal OK)
+      - Default context 'anywhere' when unknown
+
+    Returns a short, structured recommendation string. The twin passes
+    it through to the user (optionally rephrased in voice).
+    """
+    try:
+        tasks = _load_tasks()
+        if not tasks:
+            return "No tasks yet. Nothing to review."
+
+        # Backward-compat: derive status from 'completed' for old tasks
+        def _status(t):
+            s = t.get("status", "")
+            if not s:
+                if t.get("completed") is True:
+                    return "done"
+                return "active"
+            return s
+        for t in tasks:
+            t["status"] = _status(t)
+
+        now = datetime.now()
+        hour = now.hour
+        weekday = now.weekday()  # 0=Mon, 6=Sun
+        is_weekend = weekday >= 5
+
+        # Time-of-day energy band
+        if hour < 11:
+            energy_band = "high"
+            tod = "morning"
+        elif hour < 17:
+            energy_band = "medium"
+            tod = "afternoon"
+        elif hour < 21:
+            energy_band = "low"
+            tod = "evening"
+        else:
+            energy_band = "low"
+            tod = "night"
+
+        blocked = [t for t in tasks if t["status"] in ("blocked", "waiting")]
+        active = [t for t in tasks if t["status"] == "active"]
+        someday = [t for t in tasks if t["status"] == "someday"]
+
+        priority_order = {"high": 0, "urgent": 0, "medium": 1, "low": 2}
+
+        def sort_key(t):
+            return (
+                priority_order.get(t.get("priority", "medium"), 1),
+                t.get("due_date") or "9999-12-31",
+            )
+
+        out = []
+        out.append(
+            f"Task review — {now.strftime('%a %I:%M %p').lower()} ({tod})"
+        )
+        out.append("")
+
+        # Blocked section
+        if blocked:
+            out.append(f"BLOCKED ({len(blocked)}):")
+            for t in sorted(blocked, key=sort_key):
+                why = t.get("blocked_on") or "external dependency"
+                out.append(f"  • '{t['title']}' — {why}")
+            out.append("")
+        else:
+            out.append("BLOCKED: none.")
+            out.append("")
+
+        # Score active tasks for doability right now
+        energy_rank = {"low": 0, "medium": 1, "high": 2}
+        my_energy_rank = energy_rank[energy_band]
+
+        def score(t):
+            # Tasks with energy <= my energy get bonus (doable now)
+            t_energy_rank = energy_rank.get(t.get("energy", "medium"), 1)
+            energy_ok = 0 if t_energy_rank <= my_energy_rank else 2
+            # Context: 'anywhere' is always doable
+            ctx = t.get("context", ["anywhere"])
+            if isinstance(ctx, str):
+                ctx = [c.strip() for c in ctx.split(",") if c.strip()]
+            if not ctx:
+                ctx = ["anywhere"]
+            ctx_ok = 0 if "anywhere" in ctx else 1
+            # Weekend/weekday heuristic — work tasks slightly deprioritized on weekends
+            cat = (t.get("category") or "").lower()
+            if is_weekend and ("work" in cat or "office" in cat):
+                weekend_ok = 1
+            else:
+                weekend_ok = 0
+            priority = priority_order.get(t.get("priority", "medium"), 1)
+            due = t.get("due_date") or "9999-12-31"
+            return (energy_ok, ctx_ok, weekend_ok, priority, due)
+
+        scored = sorted(active, key=score)
+
+        # Pick top 3 that are actually doable energy-wise
+        suggested = []
+        for t in scored:
+            t_energy_rank = energy_rank.get(t.get("energy", "medium"), 1)
+            if t_energy_rank <= my_energy_rank:
+                suggested.append(t)
+            if len(suggested) >= 3:
+                break
+
+        if suggested:
+            out.append("SUGGESTED NOW:")
+            for t in suggested[:3]:
+                ctx = t.get("context", ["anywhere"])
+                if isinstance(ctx, str):
+                    ctx = [c.strip() for c in ctx.split(",") if c.strip()]
+                if not ctx:
+                    ctx = ["anywhere"]
+                line = f"  • '{t['title']}'"
+                if t.get("next_action"):
+                    line += f"\n    Next action: {t['next_action']}"
+                else:
+                    line += "\n    (no next_action set — define one)"
+                bits = [f"{t.get('energy', 'medium')} energy",
+                        f"{','.join(ctx)} context"]
+                if t.get("due_date"):
+                    bits.append(f"due {t['due_date']}")
+                line += f"\n    ({', '.join(bits)})"
+                out.append(line)
+            out.append("")
+        elif active:
+            out.append(
+                "SUGGESTED NOW: none match current energy. Top active task:"
+            )
+            top = scored[0] if scored else active[0]
+            out.append(
+                f"  • '{top['title']}' "
+                f"(energy: {top.get('energy', 'medium')}, "
+                f"status: {top['status']})"
+            )
+            if top.get("next_action"):
+                out.append(f"    Next action: {top['next_action']}")
+            out.append("")
+        else:
+            out.append("SUGGESTED NOW: nothing active.")
+            out.append("")
+
+        if someday:
+            out.append(
+                f"SOMEDAY ({len(someday)}): "
+                + ", ".join(f"'{t['title']}'" for t in someday[:5])
+                + ("..." if len(someday) > 5 else "")
+            )
+            out.append("")
+
+        out.append("Want me to walk through it?")
+        return "\n".join(out)
+    except Exception as e:
+        return f"Task review failed: {type(e).__name__}: {e}"
 
 
 def tool_get_current_time() -> str:
@@ -2199,6 +2605,212 @@ def tool_shorten_url(url: str) -> str:
     return f"URL shortening failed for: {url}"
 
 
+def tool_news_digest(feeds_file: str = "", limit_per_feed: int = 5) -> str:
+    """Pull all subscribed RSS feeds and return raw items for AI digestion.
+
+    The twin's LLM then writes a 4-6 sentence digest with no URLs/links,
+    customized to the user's actual life (Baltimore local, medical, Apple
+    ecosystem, AI tools, legal/probation). User can ask 'more on X' to
+    expand any item.
+
+    Args:
+        feeds_file:      optional path to a feeds file (default: ~/ai-twin-memory/rss_feeds.txt)
+        limit_per_feed:  max items per feed (default 5, clamped to 10)
+
+    Returns a structured text the twin can pass to the LLM for digestion.
+    """
+    try:
+        if not feeds_file:
+            feeds_file = str(Path.home() / "ai-twin-memory" / "rss_feeds.txt")
+        feeds_path = Path(feeds_file)
+        if not feeds_path.exists():
+            return ("No RSS feeds subscribed. "
+                    "Add URLs to ~/ai-twin-memory/rss_feeds.txt (one per line).")
+
+        feeds = []
+        for line in feeds_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                feeds.append(line)
+
+        if not feeds:
+            return ("No RSS feeds subscribed. "
+                    "Add URLs to ~/ai-twin-memory/rss_feeds.txt (one per line).")
+
+        limit_per_feed = max(1, min(int(limit_per_feed), 10))
+
+        all_items = []
+        for feed_url in feeds:
+            try:
+                raw = tool_read_rss(feed_url, limit=limit_per_feed)
+                # Parse out items from tool_read_rss's format:
+                #   1. <title>
+                #      Published: <pubDate>
+                #      Link: <link>
+                #      <description>
+                # Split on numbered lines
+                blocks = re.split(r"\n(?=\d+\.\s)", raw)
+                for block in blocks[1:]:
+                    title_match = re.match(r"\d+\.\s+(.+)", block)
+                    if not title_match:
+                        continue
+                    title = title_match.group(1).strip()
+                    pub_match = re.search(r"Published:\s+(.+)", block)
+                    link_match = re.search(r"Link:\s+(\S+)", block)
+                    # Description = lines that aren't title/Published/Link
+                    desc_lines = []
+                    for ln in block.splitlines()[1:]:
+                        ln_s = ln.strip()
+                        if not ln_s:
+                            continue
+                        if ln_s.startswith("Published:") or ln_s.startswith("Link:"):
+                            continue
+                        desc_lines.append(ln_s)
+                    desc = " ".join(desc_lines)[:200]
+                    all_items.append({
+                        "title": title,
+                        "link": link_match.group(1) if link_match else "",
+                        "pubDate": pub_match.group(1).strip() if pub_match else "",
+                        "description": desc,
+                        "source_feed": feed_url,
+                    })
+            except Exception:
+                continue  # skip broken feed
+
+        if not all_items:
+            return "No items found in any subscribed feed."
+
+        out = [f"Aggregated {len(all_items)} items from {len(feeds)} feeds:",
+               "=" * 60, ""]
+        for i, it in enumerate(all_items, 1):
+            out.append(f"[{i}] {it['title']}")
+            if it["pubDate"]:
+                out.append(f"    Published: {it['pubDate']}")
+            if it["description"]:
+                out.append(f"    {it['description']}")
+            if it["link"]:
+                out.append(f"    Link: {it['link']}")
+            out.append(f"    Source: {it['source_feed']}")
+            out.append("")
+        return "\n".join(out)
+    except Exception as e:
+        return f"News digest failed: {type(e).__name__}: {e}"
+
+
+def tool_scrape_website(url: str, extract_links: bool = False) -> str:
+    """Scrape a website with anti-bot handling and content extraction.
+
+    Better than read_url for JS-heavy pages, news sites, portals.
+    Returns the main article text (not the raw HTML), page title, and
+    meta description. Optionally extracts all links if extract_links=true.
+
+    Uses lxml when available (fast, accurate). Falls back to tool_read_url
+    if lxml isn't installed or parsing fails — keeps the tool working on
+    Termux/Android without requiring new pip dependencies.
+    """
+    try:
+        # lxml is optional on Termux — import lazily and fall back if absent
+        try:
+            from lxml import html as lxml_html
+        except Exception:
+            return tool_read_url(url)
+
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        import random
+        USER_AGENTS = [
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+            "(KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        ]
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        session = requests.Session()
+        session.headers.update(headers)
+        resp = session.get(url, timeout=20, allow_redirects=True)
+        resp.raise_for_status()
+
+        try:
+            doc = lxml_html.fromstring(resp.content)
+        except Exception:
+            return tool_read_url(url)
+
+        # Title
+        title = doc.find(".//title")
+        title_text = (title.text_content().strip()
+                      if title is not None and title.text_content() else "")
+
+        # Meta description
+        meta_desc = ""
+        for m in doc.findall(".//meta"):
+            if (m.get("name") or "").lower() == "description":
+                meta_desc = m.get("content", "") or ""
+                break
+
+        # Strip scripts, styles, nav, ads
+        for tag in doc.xpath("//script|//style|//nav|//footer|//aside|//form|//header"):
+            parent = tag.getparent()
+            if parent is not None:
+                parent.remove(tag)
+
+        # Find main content — biggest text block heuristic
+        candidates = []
+        for el in doc.xpath("//div|//article|//section|//main"):
+            text = (el.text_content() or "").strip()
+            if len(text) > 200:
+                candidates.append((len(text), el, text))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            main_text = candidates[0][2]
+        else:
+            main_text = (doc.text_content() or "").strip()
+
+        # Clean whitespace
+        main_text = re.sub(r"\s+", " ", main_text).strip()
+        if len(main_text) > 8000:
+            main_text = main_text[:8000] + "\n\n[... truncated]"
+
+        result = f"Title: {title_text}\nURL: {url}\n"
+        if meta_desc:
+            result += f"Description: {meta_desc}\n"
+        result += f"\n--- Content ---\n{main_text}\n"
+
+        if extract_links:
+            links = []
+            for a in doc.xpath("//a[@href]"):
+                href = (a.get("href") or "").strip()
+                text = (a.text_content() or "").strip()
+                if href and text and href.startswith("http"):
+                    links.append(f"  - {text}: {href}")
+            if links:
+                result += (f"\n--- Links ({len(links)}) ---\n"
+                           + "\n".join(links[:50]))
+
+        return result
+
+    except requests.exceptions.Timeout:
+        return f"Scraping {url} timed out."
+    except Exception as e:
+        # Last-ditch fallback to read_url — keeps the tool useful even on
+        # sites lxml can't parse or when lxml isn't installed.
+        try:
+            return tool_read_url(url)
+        except Exception:
+            return f"Failed to scrape {url}: {type(e).__name__}: {e}"
+
+
 # ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
@@ -2247,6 +2859,9 @@ _TOOL_FUNCTIONS = {
     "create_calendar_event": tool_create_calendar_event,
     "read_rss": tool_read_rss,
     "shorten_url": tool_shorten_url,
+    "task_review": tool_task_review,
+    "news_digest": tool_news_digest,
+    "scrape_website": tool_scrape_website,
 }
 
 

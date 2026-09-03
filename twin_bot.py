@@ -1413,6 +1413,140 @@ def _rss_monitoring_loop():
             log.error(f"RSS monitoring error: {e}")
 
 
+def _daily_digest_loop():
+    """Background thread that pushes an AI-curated news digest once per day.
+
+    Default time: 8am (configurable via DAILY_DIGEST_HOUR in .env, 0-23).
+    Calls news_digest tool, passes the aggregated raw items to the LLM with
+    instructions to write a 4-6 sentence friend-style digest (no URLs,
+    no headers, no bullet points), customized to the user's actual life
+    (Baltimore local, medical, Apple ecosystem, AI tools, legal/probation),
+    and sends it as a single Telegram message.
+
+    Uses llm_client.generate() (the plain-text generate path on
+    MultiProviderClient). Falls back to generate_with_tools() with
+    tools_config=None if generate() ever grows a different signature on
+    a subclass. Tries generate_text() as well in case a future provider
+    client exposes that name.
+    """
+    from tools import tool_news_digest
+
+    try:
+        digest_hour = int(os.environ.get("DAILY_DIGEST_HOUR", "8"))
+    except Exception:
+        digest_hour = 8
+    # Clamp to a sensible range
+    if digest_hour < 0 or digest_hour > 23:
+        digest_hour = 8
+    log.info(f"Daily digest scheduled for {digest_hour:02d}:00 local time")
+
+    last_run_date = None
+
+    while True:
+        time.sleep(60)  # Check every minute
+
+        try:
+            now = datetime.now()
+
+            # Only run on the configured hour
+            if now.hour != digest_hour:
+                continue
+            # Only run once per day
+            if now.date() == last_run_date:
+                continue
+            # Skip anything outside the 7am to 10pm quiet-hours window
+            if now.hour < 7 or now.hour > 22:
+                continue
+
+            # Check if the user has any RSS feeds subscribed
+            feeds_file = Path.home() / "ai-twin-memory" / "rss_feeds.txt"
+            if not feeds_file.exists():
+                continue
+            feeds = [line.strip() for line in
+                     feeds_file.read_text(encoding="utf-8").splitlines()
+                     if line.strip() and not line.startswith("#")]
+            if not feeds:
+                continue
+
+            log.info("Running daily news digest...")
+
+            # Pull all feeds
+            raw_items = tool_news_digest()
+            if not raw_items or "No items" in raw_items or "No RSS feeds" in raw_items:
+                continue
+
+            digest_prompt = f"""Read these RSS items and write a 4-6 sentence text message to me, like a friend texting me the news. Pick ONLY the 3-5 items relevant to my life:
+- I live in Baltimore city
+- I'm on probation (transferred to Baltimore)
+- I have medical follow-ups (Dr. Lu via MyChart)
+- I'm setting up new Apple devices (MacBook Pro, iPhone)
+- I follow AI tools and developments
+
+NO URLs. NO headers. NO bullet points. NO links. Just a friend-style text. End with one optional question like "want more on any of these?"
+
+RSS ITEMS:
+{raw_items}
+
+Your text:"""
+
+            digest_system = ("You write like a friend texting another friend. "
+                             "Short, specific, no AI-speak. No corporate blog "
+                             "phrases. Use contractions. Vary sentence length.")
+
+            digest_text = None
+            # Preferred: plain-text generate() (no tool loop needed for a digest)
+            try:
+                digest_text = llm_client.generate(
+                    prompt=digest_prompt,
+                    system_instruction=digest_system,
+                )
+            except Exception as e:
+                log.warning(f"llm_client.generate() failed for digest: {e}")
+
+            # Fallback 1: generate_text() if a provider client exposes it
+            if not digest_text:
+                try:
+                    digest_text = llm_client.generate_text(
+                        prompt=digest_prompt,
+                        system_instruction=digest_system,
+                    )
+                except AttributeError:
+                    pass
+                except Exception as e:
+                    log.warning(f"llm_client.generate_text() not available: {e}")
+
+            # Fallback 2: generate_with_tools() with no tools
+            if not digest_text:
+                try:
+                    digest_text = llm_client.generate_with_tools(
+                        prompt=digest_prompt,
+                        system_instruction=digest_system,
+                        tools_config=None,
+                        tool_executor=None,
+                        max_iterations=1,
+                    )
+                except Exception as e:
+                    log.error(f"Daily digest LLM call failed: {e}")
+                    continue
+
+            digest_text = (digest_text or "").strip()
+            if not digest_text:
+                continue
+
+            # Send to Telegram
+            try:
+                _send_telegram_message(ALLOWED_USER_ID, digest_text)
+                cm.append_to_today("twin", "Daily news digest sent",
+                                   observation="daily digest")
+                log.info("Daily news digest sent")
+                last_run_date = now.date()
+            except Exception as e:
+                log.error(f"Daily digest Telegram send failed: {e}")
+
+        except Exception as e:
+            log.error(f"Daily digest error: {e}")
+
+
 def _cancel_redundant_reminders(user_text: str):
     """Cancel pending proactive reminders that are now redundant.
 
@@ -1655,6 +1789,11 @@ def main() -> None:
                                     daemon=True)
     rss_thread.start()
     log.info("RSS monitoring thread started")
+
+    # Start the daily news digest thread (once-per-day AI-curated briefing)
+    digest_thread = threading.Thread(target=_daily_digest_loop, daemon=True)
+    digest_thread.start()
+    log.info("Daily digest thread started")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

@@ -199,9 +199,13 @@ class KnowledgeBase:
         for filename, description, _, max_chars in DOMAINS:
             content = self.get_domain(filename)
             if content:
-                # Enforce hard limit
-                if len(content) > max_chars:
-                    content = content[:max_chars] + "\n"
+                # Do NOT truncate when reading. Send complete content.
+                # The size limits are enforced during WRITING (update_all),
+                # not during reading. If content is over the limit here,
+                # it means a previous write didn't compress properly —
+                # but cutting it off now would lose information.
+                # Send it complete and let the next update cycle compress it.
+                
                 # Clean up header
                 lines = content.strip().splitlines()
                 if lines and lines[0].startswith("# "):

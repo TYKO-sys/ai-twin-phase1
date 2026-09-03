@@ -29,6 +29,7 @@ Tools available:
 from __future__ import annotations
 
 import ast
+import hashlib
 import operator
 import os
 import re
@@ -441,6 +442,91 @@ TOOL_DEFINITIONS = [
     {
         "name": "list_routines",
         "description": "List all active routines and habits.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "ocr_image",
+        "description": (
+            "Extract text from an image using OCR. Useful for reading "
+            "documents, medical records, court papers, forms, prescriptions, "
+            "or any text in an image. Uses free OCR.space API (no key needed) "
+            "or local Tesseract if installed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_path": {"type": "string", "description": "Path to the image file"},
+                "language": {"type": "string", "description": "Language code: eng, fra, spa, etc. (default: eng)"}
+            },
+            "required": ["image_path"]
+        }
+    },
+    {
+        "name": "monitor_website",
+        "description": (
+            "Start monitoring a website for changes. The twin checks the page "
+            "periodically and notifies you when content changes. Use for: "
+            "waitlist positions, appointment availability, status pages, "
+            "any page that might update."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to monitor"},
+                "description": {"type": "string", "description": "What you're watching for"},
+                "check_interval_minutes": {"type": "integer", "description": "How often to check (default: 30)"}
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "list_monitored_sites",
+        "description": "List all websites being monitored for changes.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "stop_monitoring",
+        "description": "Stop monitoring a website for changes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to stop monitoring"}
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "trigger_webhook",
+        "description": (
+            "Trigger an n8n cloud workflow via webhook. n8n connects to "
+            "400+ services (email, calendar, Slack, Google Sheets, etc.). "
+            "The user sets up workflows in n8n.cloud and this triggers them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "webhook_name": {"type": "string", "description": "Name of a saved webhook"},
+                "webhook_url": {"type": "string", "description": "Full webhook URL from n8n"},
+                "data": {"type": "string", "description": "JSON data to send to the workflow"}
+            }
+        }
+    },
+    {
+        "name": "save_webhook",
+        "description": "Save an n8n webhook URL for easy triggering later.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short name (e.g., 'send_email')"},
+                "webhook_url": {"type": "string", "description": "Full webhook URL"},
+                "description": {"type": "string", "description": "What this workflow does"}
+            },
+            "required": ["name", "webhook_url"]
+        }
+    },
+    {
+        "name": "list_webhooks",
+        "description": "List all saved n8n webhook URLs.",
         "parameters": {"type": "object", "properties": {}}
     }
 ]
@@ -1433,6 +1519,331 @@ def tool_get_location() -> str:
 
 
 # ---------------------------------------------------------------------- #
+# OCR Tool — Read text from images/documents
+# ---------------------------------------------------------------------- #
+
+MONITORED_SITES_FILE = Path.home() / "ai-twin-memory" / "monitored_sites.json"
+
+
+def tool_ocr_image(image_path: str = "", language: str = "eng") -> str:
+    """Extract text from an image using free OCR.
+
+    Uses OCR.space API (free, no key needed for basic usage).
+    Can also use local Tesseract if installed.
+
+    Args:
+        image_path: Path to the image file (on the phone)
+        language: Language code (eng, fra, spa, etc.)
+    """
+    import base64
+
+    if not image_path:
+        return "No image path provided. Send a photo with a caption saying 'OCR this' instead."
+
+    # Try local Tesseract first (if installed)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["tesseract", image_path, "-", "-l", language],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return f"OCR result (Tesseract):\n{result.stdout.strip()}"
+    except FileNotFoundError:
+        pass  # Tesseract not installed, fall through to API
+    except Exception:
+        pass
+
+    # Fall back to OCR.space free API
+    try:
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+
+        # OCR.space free tier (no API key needed for basic usage)
+        b64_image = base64.b64encode(image_data).decode("ascii")
+
+        resp = requests.post(
+            "https://api.ocr.space/parse/image",
+            data={
+                "base64Image": f"data:image/jpeg;base64,{b64_image}",
+                "language": language,
+                "isOverlayRequired": "false",
+                "scale": "true",
+                "OCREngine": "2",
+            },
+            timeout=30
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("ParsedResults"):
+                text = data["ParsedResults"][0].get("ParsedText", "")
+                if text.strip():
+                    return f"OCR result:\n{text.strip()}"
+            return "OCR completed but no text found in image."
+        else:
+            return f"OCR API error: {resp.status_code}"
+    except Exception as e:
+        return f"OCR failed: {type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------- #
+# Website Monitoring Tool — Changedetection
+# ---------------------------------------------------------------------- #
+
+def _load_monitored_sites() -> list:
+    """Load monitored sites from JSON file."""
+    try:
+        if MONITORED_SITES_FILE.exists():
+            return json.loads(MONITORED_SITES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_monitored_sites(sites: list) -> None:
+    """Save monitored sites to JSON file."""
+    MONITORED_SITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MONITORED_SITES_FILE.write_text(
+        json.dumps(sites, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
+def tool_monitor_website(url: str, description: str = "", 
+                         check_interval_minutes: int = 30) -> str:
+    """Start monitoring a website for changes.
+
+    The twin will check this URL periodically and notify you when
+    the content changes. Useful for:
+    - Waitlist position updates
+    - Appointment slot availability
+    - Status page changes
+    - Any page that might update
+
+    Args:
+        url: The URL to monitor
+        description: What you're watching for (e.g., "WGU waitlist position")
+        check_interval_minutes: How often to check (default 30)
+    """
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        # Fetch initial content to establish baseline
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=20)
+        content_hash = hashlib.md5(resp.text.encode()).hexdigest()
+
+        sites = _load_monitored_sites()
+
+        # Check if already monitoring
+        for site in sites:
+            if site["url"] == url:
+                site["last_hash"] = content_hash
+                site["description"] = description or site.get("description", "")
+                site["check_interval"] = check_interval_minutes
+                site["last_check"] = datetime.now().isoformat()
+                _save_monitored_sites(sites)
+                return f"Updated monitoring for {url}. Checking every {check_interval_minutes} minutes."
+
+        # Add new site
+        sites.append({
+            "url": url,
+            "description": description or "No description provided",
+            "last_hash": content_hash,
+            "last_check": datetime.now().isoformat(),
+            "check_interval": check_interval_minutes,
+            "active": True,
+        })
+        _save_monitored_sites(sites)
+
+        return f"Now monitoring {url}. I'll check every {check_interval_minutes} minutes and let you know when it changes."
+    except Exception as e:
+        return f"Failed to start monitoring: {type(e).__name__}: {e}"
+
+
+def tool_list_monitored_sites() -> str:
+    """List all websites being monitored for changes."""
+    sites = _load_monitored_sites()
+    active = [s for s in sites if s.get("active")]
+    if not active:
+        return "Not monitoring any websites. Use monitor_website to start."
+    lines = [f"Monitored sites ({len(active)}):"]
+    for i, site in enumerate(active):
+        lines.append(f"  {i+1}. {site['url']}")
+        lines.append(f"     {site.get('description', 'No description')}")
+        lines.append(f"     Last checked: {site.get('last_check', 'never')}")
+        lines.append(f"     Interval: {site.get('check_interval', 30)} min")
+    return "\n".join(lines)
+
+
+def tool_stop_monitoring(url: str) -> str:
+    """Stop monitoring a website."""
+    sites = _load_monitored_sites()
+    for site in sites:
+        if site["url"] == url or url in site["url"]:
+            site["active"] = False
+            _save_monitored_sites(sites)
+            return f"Stopped monitoring {site['url']}."
+    return f"Not currently monitoring {url}."
+
+
+def _check_monitored_sites() -> list:
+    """Check all monitored sites for changes. Called by background thread.
+
+    Returns list of (url, description, old_hash, new_hash) for changed sites.
+    """
+    import hashlib
+    sites = _load_monitored_sites()
+    changed = []
+
+    for site in sites:
+        if not site.get("active"):
+            continue
+
+        # Check if enough time has passed
+        last_check = site.get("last_check", "")
+        interval = site.get("check_interval", 30)
+
+        if last_check:
+            try:
+                last_dt = datetime.fromisoformat(last_check)
+                elapsed = (datetime.now() - last_dt).total_seconds() / 60
+                if elapsed < interval:
+                    continue
+            except Exception:
+                pass
+
+        # Fetch the URL
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"}
+            resp = requests.get(site["url"], headers=headers, timeout=20)
+            new_hash = hashlib.md5(resp.text.encode()).hexdigest()
+
+            if new_hash != site.get("last_hash"):
+                changed.append({
+                    "url": site["url"],
+                    "description": site.get("description", ""),
+                    "old_hash": site.get("last_hash", ""),
+                    "new_hash": new_hash,
+                })
+                site["last_hash"] = new_hash
+
+            site["last_check"] = datetime.now().isoformat()
+        except Exception:
+            site["last_check"] = datetime.now().isoformat()
+
+    if changed:
+        _save_monitored_sites(sites)
+
+    return changed
+
+
+# ---------------------------------------------------------------------- #
+# n8n Cloud Integration — Connect to 400+ services
+# ---------------------------------------------------------------------- #
+
+N8N_WEBHOOKS_FILE = Path.home() / "ai-twin-memory" / "n8n_webhooks.json"
+
+
+def _load_n8n_webhooks() -> dict:
+    """Load saved n8n webhook URLs."""
+    try:
+        if N8N_WEBHOOKS_FILE.exists():
+            return json.loads(N8N_WEBHOOKS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_n8n_webhooks(hooks: dict) -> None:
+    N8N_WEBHOOKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    N8N_WEBHOOKS_FILE.write_text(
+        json.dumps(hooks, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
+def tool_trigger_webhook(webhook_name: str = "", webhook_url: str = "",
+                         data: str = "{}") -> str:
+    """Trigger an n8n workflow via webhook.
+
+    n8n is a free cloud automation platform that connects to 400+ services.
+    You set up workflows in n8n.cloud, and this tool triggers them.
+
+    Examples of what n8n workflows can do:
+    - Send emails (Gmail, Outlook, etc.)
+    - Create calendar events (Google Calendar)
+    - Add rows to Google Sheets
+    - Post to Slack/Discord
+    - Send SMS via Twilio
+    - Create tasks in Notion/Todoist
+    - Post to social media
+
+    Args:
+        webhook_name: Name of a saved webhook (if you've saved one before)
+        webhook_url: Full webhook URL from n8n (https://n8n.cloud/webhook/...)
+        data: JSON string with data to send to the workflow
+    """
+    try:
+        # If webhook_name provided, look up saved URL
+        if webhook_name and not webhook_url:
+            hooks = _load_n8n_webhooks()
+            if webhook_name in hooks:
+                webhook_url = hooks[webhook_name]
+            else:
+                return f"No saved webhook named '{webhook_name}'. Use save_webhook first, or provide the URL directly."
+
+        if not webhook_url:
+            return "Provide either a webhook_name (if saved) or a webhook_url."
+
+        # Parse the data
+        try:
+            payload = json.loads(data) if isinstance(data, str) else data
+        except json.JSONDecodeError:
+            payload = {"text": data}
+
+        resp = requests.post(webhook_url, json=payload, timeout=30)
+
+        if resp.status_code in (200, 201, 204):
+            return f"Workflow triggered successfully. Response: {resp.text[:200] if resp.text else '(no response body)'}"
+        else:
+            return f"Webhook returned {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return f"Webhook trigger failed: {type(e).__name__}: {e}"
+
+
+def tool_save_webhook(name: str, webhook_url: str, description: str = "") -> str:
+    """Save an n8n webhook URL for easy triggering later.
+
+    Args:
+        name: A short name to identify this webhook (e.g., "send_email", "add_calendar_event")
+        webhook_url: The full webhook URL from n8n.cloud
+        description: What this workflow does
+    """
+    hooks = _load_n8n_webhooks()
+    hooks[name] = webhook_url
+    _save_n8n_webhooks(hooks)
+    return f"Saved webhook '{name}'. You can now trigger it with trigger_webhook(webhook_name='{name}')."
+
+
+def tool_list_webhooks() -> str:
+    """List all saved n8n webhook URLs."""
+    hooks = _load_n8n_webhooks()
+    if not hooks:
+        return "No saved webhooks. Use save_webhook to add one."
+    lines = [f"Saved webhooks ({len(hooks)}):"]
+    for name, url in hooks.items():
+        # Mask the URL for security
+        masked = url[:30] + "..." if len(url) > 30 else url
+        lines.append(f"  {name}: {masked}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
 
@@ -1469,6 +1880,13 @@ _TOOL_FUNCTIONS = {
     "dial_phone": tool_dial_phone,
     "get_battery_status": tool_get_battery_status,
     "get_location": tool_get_location,
+    "ocr_image": tool_ocr_image,
+    "monitor_website": tool_monitor_website,
+    "list_monitored_sites": tool_list_monitored_sites,
+    "stop_monitoring": tool_stop_monitoring,
+    "trigger_webhook": tool_trigger_webhook,
+    "save_webhook": tool_save_webhook,
+    "list_webhooks": tool_list_webhooks,
 }
 
 

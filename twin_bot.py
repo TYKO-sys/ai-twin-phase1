@@ -1272,6 +1272,51 @@ def _safe_reply_to_user(text: str):
         log.error(f"Proactive message send failed: {e}")
 
 
+def _website_monitoring_loop():
+    """Background thread that checks monitored websites for changes.
+
+    Zero tokens when idle. Only uses tokens when a change is detected
+    and the twin needs to generate a notification message.
+    """
+    from tools import _check_monitored_sites, _load_monitored_sites
+    log.info("Website monitoring started (checks every 5 minutes)")
+
+    while True:
+        time.sleep(300)  # Check every 5 minutes
+
+        try:
+            sites = _load_monitored_sites()
+            active = [s for s in sites if s.get("active")]
+            if not active:
+                continue  # Nothing to monitor
+
+            # Quiet hours — don't send change notifications at night
+            now = datetime.now()
+            if now.hour >= 23 or now.hour < 7:
+                continue
+
+            changed = _check_monitored_sites()
+
+            for change in changed:
+                # Send notification about the change
+                try:
+                    _send_telegram_message(
+                        ALLOWED_USER_ID,
+                        f"Website changed: {change['description']}\n"
+                        f"URL: {change['url']}\n\n"
+                        f"Go check it."
+                    )
+                    cm.append_to_today("twin",
+                        f"Website change detected: {change['url']}",
+                        observation="website monitor")
+                    log.info(f"Website change detected: {change['url']}")
+                except Exception as e:
+                    log.error(f"Failed to send website change notification: {e}")
+
+        except Exception as e:
+            log.error(f"Website monitoring error: {e}")
+
+
 def _cancel_redundant_reminders(user_text: str):
     """Cancel pending proactive reminders that are now redundant.
 
@@ -1502,6 +1547,12 @@ def main() -> None:
                                          daemon=True)
     proactive_thread.start()
     log.info("Proactive messaging thread started")
+
+    # Start the website monitoring thread
+    monitor_thread = threading.Thread(target=_website_monitoring_loop,
+                                       daemon=True)
+    monitor_thread.start()
+    log.info("Website monitoring thread started")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

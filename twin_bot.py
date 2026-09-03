@@ -284,6 +284,10 @@ def _send_telegram_message(chat_id: int, text: str,
     Converts Markdown to Telegram HTML before sending for rich text display.
     Falls back to plain text if HTML conversion fails.
 
+    NOTE: We do NOT use reply_to_message_id. The user doesn't want the
+    "reply to" preview that Telegram shows above messages. All messages
+    are sent as standalone messages in the chat.
+
     Telegram's API sometimes returns 502 Bad Gateway or times out,
     especially during peak hours. We retry with exponential backoff:
     2s, 4s, 8s, 16s, 32s — total ~1 minute of retries before giving up.
@@ -300,12 +304,9 @@ def _send_telegram_message(chat_id: int, text: str,
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            if reply_to:
-                bot.send_message(chat_id, html_text,
-                                 reply_to_message_id=reply_to,
-                                 timeout=60)
-            else:
-                bot.send_message(chat_id, html_text, timeout=60)
+            # Always send as standalone message (no reply_to_message_id)
+            # This removes the "reply preview" that Telegram shows
+            bot.send_message(chat_id, html_text, timeout=60)
             return True
         except Exception as e:
             wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds
@@ -1079,6 +1080,7 @@ def _proactive_messaging_loop():
         time.sleep(300)  # Check every 5 minutes (local checks only, no tokens)
 
         try:
+            global _last_user_message_time
             now = datetime.now()
             now_ts = time.time()
 

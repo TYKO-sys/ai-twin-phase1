@@ -50,6 +50,7 @@ WORKSPACE_DIR = Path.home() / "ai-twin-memory" / "workspace"
 NOTES_DIR = Path.home() / "ai-twin-memory" / "notes"
 TASKS_FILE = Path.home() / "ai-twin-memory" / "tasks.json"
 JOURNAL_DIR = Path.home() / "ai-twin-memory" / "journal"
+BANNED_PHRASES_FILE = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
 
 # Ensure directories exist
 for d in (WORKSPACE_DIR, NOTES_DIR, JOURNAL_DIR):
@@ -694,6 +695,33 @@ TOOL_DEFINITIONS = [
                 "url": {"type": "string", "description": "The long URL to shorten"}
             },
             "required": ["url"]
+        }
+    },
+    {
+        "name": "add_banned_phrase",
+        "description": "Add a phrase to the user's personal banned list. Use when the user says 'never say X' or 'I hate when you say X' or 'stop saying X'. The phrase is banned forever and the twin avoids it in all future messages.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phrase": {"type": "string", "description": "The phrase to ban"}
+            },
+            "required": ["phrase"]
+        }
+    },
+    {
+        "name": "list_banned_phrases",
+        "description": "Show all phrases the user has banned.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "remove_banned_phrase",
+        "description": "Remove a phrase from the banned list (if it was added by mistake).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "phrase": {"type": "string", "description": "The phrase to remove"}
+            },
+            "required": ["phrase"]
         }
     }
 ]
@@ -2812,6 +2840,77 @@ def tool_scrape_website(url: str, extract_links: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------- #
+# Kill File — the user's personal banned phrases
+# ---------------------------------------------------------------------- #
+
+BANNED_PHRASES_FILE = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
+
+
+def _load_banned_phrases() -> list:
+    """Load the user's personal kill file."""
+    try:
+        if BANNED_PHRASES_FILE.exists():
+            return [line.strip() for line in BANNED_PHRASES_FILE.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.startswith("#")]
+    except Exception:
+        pass
+    return []
+
+
+def _save_banned_phrases(phrases: list) -> None:
+    BANNED_PHRASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BANNED_PHRASES_FILE.write_text("\n".join(phrases) + "\n", encoding="utf-8")
+
+
+def tool_add_banned_phrase(phrase: str) -> str:
+    """Add a phrase to the user's personal banned list (kill file).
+
+    The user says "never say [X]" and the twin calls this. The phrase
+    is added to ~/ai-twin-memory/banned_phrases.txt and loaded into
+    the system prompt on next twin restart. After a month of use,
+    this personal list beats any generic banned-words list.
+
+    Args:
+        phrase: The phrase to ban forever
+    """
+    phrase = phrase.strip().lower()
+    if not phrase:
+        return "Need a phrase to ban."
+    phrases = _load_banned_phrases()
+    if phrase in phrases:
+        return f"'{phrase}' is already on the banned list."
+    phrases.append(phrase)
+    _save_banned_phrases(phrases)
+    return f"Banned '{phrase}'. I'll never say it again. Restart the twin (twin-stop && twin-start) for it to take effect."
+
+
+def tool_list_banned_phrases() -> str:
+    """List all phrases in the user's personal kill file."""
+    phrases = _load_banned_phrases()
+    if not phrases:
+        return "Your kill file is empty. Say 'never say [X]' to add a phrase."
+    lines = [f"Your kill file ({len(phrases)} phrases):"]
+    for i, p in enumerate(phrases, 1):
+        lines.append(f"  {i}. {p}")
+    return "\n".join(lines)
+
+
+def tool_remove_banned_phrase(phrase: str) -> str:
+    """Remove a phrase from the kill file (in case of mistakes).
+
+    Args:
+        phrase: The phrase to remove
+    """
+    phrase = phrase.strip().lower()
+    phrases = _load_banned_phrases()
+    if phrase in phrases:
+        phrases.remove(phrase)
+        _save_banned_phrases(phrases)
+        return f"Removed '{phrase}' from the kill file. Restart the twin for it to take effect."
+    return f"'{phrase}' isn't in the kill file."
+
+
+# ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
 
@@ -2862,6 +2961,9 @@ _TOOL_FUNCTIONS = {
     "task_review": tool_task_review,
     "news_digest": tool_news_digest,
     "scrape_website": tool_scrape_website,
+    "add_banned_phrase": tool_add_banned_phrase,
+    "list_banned_phrases": tool_list_banned_phrases,
+    "remove_banned_phrase": tool_remove_banned_phrase,
 }
 
 

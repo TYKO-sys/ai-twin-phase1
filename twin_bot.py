@@ -130,6 +130,26 @@ with open(Path(__file__).parent / "system_prompt.txt", "r",
           encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read()
 
+# Load the user's voice profile (their actual writing style)
+_voice_path = Path.home() / "ai-twin-memory" / "voice_profile.md"
+if _voice_path.exists():
+    _voice = _voice_path.read_text(encoding="utf-8").strip()
+    if _voice:
+        SYSTEM_PROMPT += f"\n\n### USER'S VOICE PROFILE (loaded from disk)\n\n{_voice}\n"
+        log.info(f"Loaded voice profile from {_voice_path}")
+    else:
+        SYSTEM_PROMPT += "\n\n### USER'S VOICE PROFILE\n\nNo voice profile set. Default to: short sentences, heavy contractions, casual tone, no fancy words, direct questions, no greetings or sign-offs.\n"
+else:
+    SYSTEM_PROMPT += "\n\n### USER'S VOICE PROFILE\n\nNo voice profile set. Default to: short sentences, heavy contractions, casual tone, no fancy words, direct questions, no greetings or sign-offs.\n"
+
+# Load the user's kill file (personal banned phrases)
+_kill_path = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
+if _kill_path.exists():
+    _kill = _kill_path.read_text(encoding="utf-8").strip()
+    if _kill:
+        SYSTEM_PROMPT += f"\n\n### USER'S KILL FILE (personal banned phrases — never use these)\n\n{_kill}\n"
+        log.info(f"Loaded kill file from {_kill_path}")
+
 # Track which memory files were used in the last response (for footer)
 _last_context_files: list[str] = []
 

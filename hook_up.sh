@@ -226,6 +226,34 @@ print(tool_send_email(to=to, subject='AI Twin test email', body='If you can read
 fi
 
 # ------------------------------------------------------------
+# 3.5. Voice profile setup (makes the twin sound like you)
+# ------------------------------------------------------------
+print_step "Step 3.5: Voice profile setup"
+
+VOICE_FILE="$MEM_DIR/voice_profile.md"
+if [[ -f "$VOICE_FILE" ]] && [[ -s "$VOICE_FILE" ]]; then
+    print_ok "Voice profile already exists at $VOICE_FILE"
+else
+    if [[ -f ~/ai-twin/voice_profile_template.md ]]; then
+        cp ~/ai-twin/voice_profile_template.md "$VOICE_FILE"
+        print_ok "Created voice profile from template at $VOICE_FILE"
+        print_warn "Edit it any time to make the twin sound more like you."
+        print_warn "After editing, restart the twin: twin-stop && twin-start"
+    else
+        print_warn "Template not found. Skipping voice profile setup."
+    fi
+fi
+
+print_ask "Open the voice profile in nano to edit it now? (y/N) "
+read -r EDIT_VOICE
+if [[ "$EDIT_VOICE" == "y" || "$EDIT_VOICE" == "Y" ]]; then
+    nano "$VOICE_FILE"
+    print_ok "Voice profile saved. Restart the twin for changes to take effect:"
+    echo "  twin-stop && twin-start"
+fi
+echo "Voice profile: $VOICE_FILE" >> "$REPORT"
+
+# ------------------------------------------------------------
 # 4. n8n self-hosting (optional, advanced)
 # ------------------------------------------------------------
 print_step "Step 4: n8n self-hosting (optional)"

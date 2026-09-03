@@ -262,9 +262,41 @@ Output ONLY the updated content for this domain. No preamble:"""
                         idx = cleaned.index("# ")
                         cleaned = cleaned[idx:]
 
-                    # HARD ENFORCEMENT of max_chars
+                    # If over the limit, send it back for a proper rewrite
+                    # NEVER truncate by cutting the end off — that loses information
                     if len(cleaned) > max_chars:
-                        cleaned = cleaned[:max_chars].rsplit('\n', 1)[0] + "\n"
+                        log.warning(
+                            f"{filename} is {len(cleaned)} chars (limit {max_chars}). "
+                            f"Requesting a shorter rewrite..."
+                        )
+                        # Ask the LLM to compress, not truncate
+                        compress_prompt = f"""The following content is {len(cleaned)} characters but must be under {max_chars}.
+
+DO NOT cut off the end. DO NOT remove the last paragraph. Instead, compress and prioritize:
+- Remove redundant information
+- Combine related items into single lines
+- Remove the least important items
+- Keep the most critical information
+- Keep it complete — every section should have a proper ending
+
+Content to compress:
+{cleaned}
+
+Output ONLY the compressed version (under {max_chars} chars, complete, no truncation):"""
+
+                        try:
+                            compressed = llm_client.generate(
+                                prompt=compress_prompt,
+                                system_instruction="Compress this text while keeping it complete. Never cut off the end.",
+                            )
+                            if compressed and len(compressed) > 20 and len(compressed) < len(cleaned):
+                                cleaned = compressed.strip()
+                                log.info(f"Compressed {filename} to {len(cleaned)} chars")
+                        except Exception as e:
+                            log.error(f"Compression failed for {filename}: {e}")
+                        # If compression still didn't get under limit, that's OK —
+                        # we'd rather send complete content slightly over the limit
+                        # than truncated content missing critical information
 
                     path = self.dir / filename
                     path.write_text(cleaned + "\n", encoding="utf-8")

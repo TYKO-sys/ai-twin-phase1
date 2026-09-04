@@ -504,6 +504,27 @@ else
     print_warn "Invalid time, keeping default 8am"
 fi
 
+# ------------------------------------------------------------
+# 7.5. Daily check-in time (morning task review)
+# ------------------------------------------------------------
+print_step "Step 7.5: Daily check-in time"
+
+print_ask "What time should the daily morning check-in arrive? (0-23, default 9 — different from news digest time) "
+read -r CHECKIN_HOUR
+CHECKIN_HOUR="${CHECKIN_HOUR:-9}"
+
+if [[ "$CHECKIN_HOUR" =~ ^[0-9]+$ ]] && [[ "$CHECKIN_HOUR" -ge 0 ]] && [[ "$CHECKIN_HOUR" -le 23 ]]; then
+    if grep -q "^DAILY_CHECKIN_HOUR=" "$AI_TWIN_DIR/.env" 2>/dev/null; then
+        sed -i "s|^DAILY_CHECKIN_HOUR=.*|DAILY_CHECKIN_HOUR=$CHECKIN_HOUR|" "$AI_TWIN_DIR/.env"
+    else
+        echo "DAILY_CHECKIN_HOUR=$CHECKIN_HOUR" >> "$AI_TWIN_DIR/.env"
+    fi
+    print_ok "Daily check-in will arrive at ${CHECKIN_HOUR}:00 (separate from news digest)"
+    echo "Daily check-in time: ${CHECKIN_HOUR}:00" >> "$REPORT"
+else
+    print_warn "Invalid time, keeping default 9am"
+fi
+
 print_ask "Add any custom RSS feeds? (y/N) "
 read -r DO_RSS
 

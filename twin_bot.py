@@ -1039,14 +1039,15 @@ _KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
 # Zero LLM token usage when idle. Only uses tokens when there's an actual event.
 # Events that trigger proactive messages:
 # 1. Appointment/deadline approaching (checked locally, no LLM needed)
-# 2. User has been silent for 4+ hours with open threads (checked locally)
+# 2. User has been silent for 2+ hours with open tasks (checked locally)
 # 3. Task is overdue (checked locally)
 # The LLM is only called to GENERATE the message text, never to DECIDE whether to send.
 _proactive_reminders_sent = set()  # Track which reminders we've already sent (prevent duplicates)
 _last_silence_check_time = 0.0
 _SILENCE_CHECK_INTERVAL = 3600  # Check for silence every hour (not every minute)
 _PROACTIVE_QUIET_HOURS = (23, 7)  # don't message between 11pm and 7am
-_PROACTIVE_SILENCE_THRESHOLD = 14400  # 4 hours of silence triggers a check-in
+_PROACTIVE_SILENCE_THRESHOLD = 7200  # 2 hours of silence triggers a check-in
+_PROACTIVE_CHECK_INTERVAL = 180  # Run the proactive loop every 3 minutes (local checks only, no tokens)
 
 # Scheduled times (24-hour format) — DISABLED per user request
 # Morning/evening/weekly routines removed. The twin no longer pings on a schedule.
@@ -1122,13 +1123,13 @@ def _proactive_messaging_loop():
     Events:
     1. Appointment within 1 hour → "Leave soon" reminder
     2. Appointment within 24 hours → "Heads up" reminder (sent once)
-    3. User silent 4+ hours with open threads → check-in (sent once per silence period)
+    3. User silent 2+ hours with open tasks → check-in (sent once per silence period)
     4. Overdue task detected → gentle nudge (sent once per task)
     """
     log.info("Proactive messaging system started (event-driven, zero idle tokens)")
 
     while True:
-        time.sleep(300)  # Check every 5 minutes (local checks only, no tokens)
+        time.sleep(_PROACTIVE_CHECK_INTERVAL)  # Check every 3 minutes (local checks only, no tokens)
 
         try:
             global _last_user_message_time
@@ -1264,52 +1265,67 @@ def _send_proactive_reminder(event_text: str, hours_until: float, urgent: bool):
 def _check_silence(now_ts: float):
     """Check if the user has been silent long enough to warrant a check-in.
 
-    Only sends a check-in if:
-    - User hasn't messaged in 4+ hours
+    Uses the task_review tool to find something useful to suggest.
+    Only fires if:
+    - User hasn't messaged in 2+ hours
     - We haven't already sent a check-in for this silence period
-    - There are open threads in the knowledge base
-
-    Uses tokens to generate the check-in message, but only when triggered.
+    - There are tasks in tasks.json
     """
     global _last_user_message_time
 
     silence_duration = now_ts - _last_user_message_time
-
     if silence_duration < _PROACTIVE_SILENCE_THRESHOLD:
-        return  # Not silent long enough
+        return
 
-    # Check if there are open threads
-    tasks = kb.get_domain("tasks.md")
-    if not tasks or len(tasks) < 20:
-        return  # No tasks to check in about
+    # Check if there are tasks via the new tool
+    try:
+        from tools import _load_tasks
+        tasks = _load_tasks()
+        if not tasks:
+            return
+    except Exception:
+        # Fallback to old knowledge_base check
+        tasks_md = kb.get_domain("tasks.md")
+        if not tasks_md or len(tasks_md) < 20:
+            return
 
     # Check if we already sent a silence check-in after the last user message
     silence_key = f"silence_{int(_last_user_message_time)}"
     if silence_key in _proactive_reminders_sent:
-        return  # Already checked in for this silence period
+        return
 
     _proactive_reminders_sent.add(silence_key)
 
-    # Generate a specific check-in based on open threads
+    # Use task_review to get smart suggestions
     try:
-        # Short prompt — just the tasks, not the full knowledge base
-        prompt = f"""Write a 1-2 sentence check-in text to someone who hasn't talked to you in {silence_duration/3600:.0f} hours. Reference something specific from their open tasks. Be natural, not clingy. No "how are you." No "just checking in." Reference a real task.
+        from tools import tool_task_review
+        review = tool_task_review()
+    except Exception:
+        review = None
 
-Open tasks:
-{tasks[:500]}
+    # Generate a specific check-in
+    try:
+        if review and len(review) > 50:
+            prompt = f"""Write a 1-3 sentence check-in text to TYKO who hasn't talked to you in {silence_duration/3600:.0f} hours. Use this task review to reference something specific. Be casual, not clingy. No "how are you." No "just checking in." Reference a real task or blocked item. End with one direct question.
 
-Write the message now:"""
+Task review:
+{review}
+
+Write the message now (in TYKO's voice — short, casual, lowercase, contractions):"""
+        else:
+            prompt = f"""Write a 1-2 sentence check-in text to TYKO who hasn't talked to you in {silence_duration/3600:.0f} hours. Be casual, not clingy. No "how are you." No "just checking in." Reference something from their life. End with one direct question.
+
+Write the message now (in TYKO's voice — short, casual, lowercase, contractions):"""
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction="Write a short, natural text message. Be specific about what they need to do. Brief.",
+            system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak. No 'how are you' openers.",
         )
-
-        if response and len(response) > 5:
-            _send_telegram_message(ALLOWED_USER_ID, response)
-            cm.append_to_today("twin", response, observation="proactive silence check-in")
-            log.info(f"Sent silence check-in: {response[:80]}...")
-
+        msg = (response or "").strip()
+        if msg:
+            _send_telegram_message(ALLOWED_USER_ID, msg)
+            cm.append_to_today("twin", f"Proactive silence check-in sent after {silence_duration/3600:.0f}h silence", observation="proactive")
+            log.info(f"Sent silence check-in after {silence_duration/3600:.0f}h silence")
     except Exception as e:
         log.error(f"Silence check-in failed: {e}")
 
@@ -1598,6 +1614,64 @@ Your text:"""
             log.error(f"Daily digest error: {e}")
 
 
+def _daily_check_in_loop():
+    """Background thread that pushes a morning task review once per day.
+
+    Default time: 9am (configurable via DAILY_CHECKIN_HOUR in .env, 0-23)
+    Different from the news digest — this focuses on tasks, not news.
+    Calls task_review tool, sends result to LLM for digestion, pushes to Telegram.
+    """
+    checkin_hour = int(os.environ.get("DAILY_CHECKIN_HOUR", "9"))
+    log.info(f"Daily check-in scheduled for {checkin_hour}:00 local time")
+
+    last_run_date = None
+
+    while True:
+        time.sleep(60)
+
+        try:
+            now = datetime.now()
+
+            if now.hour != checkin_hour:
+                continue
+            if now.date() == last_run_date:
+                continue
+            if now.hour < 7 or now.hour > 22:
+                continue
+
+            log.info("Running daily check-in...")
+
+            from tools import tool_task_review
+            review = tool_task_review()
+
+            if not review or len(review) < 20:
+                continue  # Nothing to check in about
+
+            prompt = f"""Write a 2-4 sentence morning check-in text to TYKO. Reference the blocked tasks and the suggested-now task. Be casual, in TYKO's voice (short, lowercase, contractions, no AI-speak). End with one direct question like "want me to walk through it?" or "what's the move?"
+
+Task review:
+{review}
+
+Write the message now:"""
+
+            try:
+                response = llm_client.generate(
+                    prompt=prompt,
+                    system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak.",
+                )
+                msg = (response or "").strip()
+                if msg:
+                    _send_telegram_message(ALLOWED_USER_ID, msg)
+                    cm.append_to_today("twin", "Daily check-in sent", observation="daily check-in")
+                    log.info("Daily check-in sent")
+                    last_run_date = now.date()
+            except Exception as e:
+                log.error(f"Daily check-in LLM call failed: {e}")
+
+        except Exception as e:
+            log.error(f"Daily check-in error: {e}")
+
+
 def _cancel_redundant_reminders(user_text: str):
     """Cancel pending proactive reminders that are now redundant.
 
@@ -1845,6 +1919,11 @@ def main() -> None:
     digest_thread = threading.Thread(target=_daily_digest_loop, daemon=True)
     digest_thread.start()
     log.info("Daily digest thread started")
+
+    # Start the daily check-in thread (morning task review)
+    checkin_thread = threading.Thread(target=_daily_check_in_loop, daemon=True)
+    checkin_thread.start()
+    log.info("Daily check-in thread started")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

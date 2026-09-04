@@ -338,7 +338,7 @@ class MultiProviderClient:
         if _mm:
             provider_order = _mm.get_provider_order()
         else:
-            provider_order = ["groq", "openrouter", "freellmapi", "mistral", "cerebras", "zai", "gemini"]
+            provider_order = ["freellmapi", "groq", "openrouter", "mistral", "cerebras", "zai", "gemini"]
 
         # Map provider names to their API keys
         key_map = {
@@ -370,9 +370,9 @@ class MultiProviderClient:
                 "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
                 "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free"),
                 "freellmapi": ("https://freellmapi.tashfeenahmed.repl.co/v1", "auto"),
-                "mistral": ("https://api.mistral.ai/v1", "mistral-small-latest"),
+                "mistral": ("https://api.mistral.ai/v1", "mistral-large-latest"),
                 "cerebras": ("https://api.cerebras.ai/v1", "gemma-4-31b"),
-                "zai": ("https://api.z.ai/api/paas/v4", "glm-4-flash"),
+                "zai": ("https://api.z.ai/api/paas/v4", "glm-4.6"),
             }
 
             default_url, default_model = defaults.get(p_name, ("", ""))

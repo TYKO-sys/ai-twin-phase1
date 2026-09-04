@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -201,6 +202,14 @@ _debug_mode: bool = False
 # "I see your message, processing..." notification when messages queue up.
 _processing_lock = threading.Lock()
 _currently_processing = False
+
+# ----------------------------------------------------------------------
+# Cross-message "i'm here" tracker (FIX 4)
+# ----------------------------------------------------------------------
+# Rule: max once per day. _filter_outgoing_message checks this and strips
+# additional uses across the day.
+_im_here_used_today = False
+_im_here_reset_date = None
 
 # Initialize bot — HTML mode for rich text formatting.
 # All LLM responses (which are Markdown) get converted to Telegram HTML
@@ -1290,6 +1299,99 @@ def _user_was_emotional_recently() -> bool:
         return False
 
 
+def _load_recent_conversation(hours: int = 24) -> str:
+    """Load the last N hours of conversation from the today.md log.
+
+    Returns up to the last 8000 chars of the conversation log (recent text
+    near the tail is what matters for "did the user already address this").
+    """
+    try:
+        log_path = Path.home() / "ai-twin-memory" / "today.md"
+        if not log_path.exists():
+            # Fall back to MEMORY_DIR override (e.g. when running under tests)
+            log_path = Path(MEMORY_DIR) / "today.md"
+            if not log_path.exists():
+                return ""
+        content = log_path.read_text(encoding="utf-8")
+        if len(content) > 8000:
+            return content[-8000:]
+        return content
+    except Exception:
+        return ""
+
+
+def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
+    """Check if the user already addressed this opportunity in recent conversation.
+
+    Returns True if the user already discussed this and we should skip the
+    proactive message. This is NOT a post-filter on outgoing messages — it
+    only prevents the bot from *initiating* a nudge about something the user
+    already talked about (e.g. "don't forget to fax the MTA paperwork" when
+    the user already said they're waiting on the surgeon to sign it).
+    """
+    if not recent_conv:
+        return False
+
+    reason = opportunity.get("reason", "")
+    context = (opportunity.get("context", "") or "").lower()
+    conv_lower = recent_conv.lower()
+
+    # Completion / "already handled" markers — if these appear near a task
+    # term, the user already addressed it.
+    completion_markers = [
+        "i already did", "i already", "i told you", "i said this",
+        "i completed", "i done", "already done", "already completed",
+        "for the last time", "i already got", "i got the",
+        "i haven't even", "i haven't started", "i haven't opened",
+        "i'm waiting on", "waiting for", "i'm waiting for",
+        "i told you already", "exactly",  # "Exactly" was the user's confirmation
+    ]
+
+    # Map opportunity contexts to key terms we should look for near markers.
+    key_terms: list[str] = []
+    if "dr lu" in context or "mobilitylink" in context or "mta" in context:
+        key_terms.extend(["dr lu", "dr. lu", "mobilitylink", "mta"])
+    if "ryan white" in context or "ride" in context or "labcorp" in context or "ortho" in context:
+        key_terms.extend(["ryan white", "ride", "labcorp", "ortho"])
+    if "wgu" in context or "scholarship" in context:
+        key_terms.extend(["wgu", "scholarship"])
+    if "surgeon" in context or "most" in context:
+        key_terms.extend(["surgeon", "most "])
+    if "roi" in context or "johns hopkins" in context:
+        key_terms.extend(["roi", "johns hopkins"])
+    if "probation" in context:
+        key_terms.append("probation")
+    if "apple" in context:
+        key_terms.append("apple")
+    if "mobility" in context:
+        key_terms.append("mobility")
+
+    if not key_terms:
+        return False
+
+    # If any key term appears in the conversation with a completion marker
+    # nearby (within a 200-char window on either side), skip this opportunity.
+    for term in key_terms:
+        term_pos = 0
+        while True:
+            term_pos = conv_lower.find(term, term_pos)
+            if term_pos == -1:
+                break
+            window_start = max(0, term_pos - 200)
+            window_end = min(len(conv_lower), term_pos + 200)
+            window = conv_lower[window_start:window_end]
+            for marker in completion_markers:
+                if marker in window:
+                    log.info(
+                        f"Skipping proactive opportunity '{reason}' — user "
+                        f"already addressed '{term}' with marker '{marker}'"
+                    )
+                    return True
+            term_pos += 1
+
+    return False
+
+
 def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
     """Find something specific to reach out about. Returns the opportunity or None.
 
@@ -1415,6 +1517,25 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
         # Score and pick the best opportunity
         if not opportunities:
             return None
+
+        # Conversation-aware filter: drop opportunities the user already
+        # addressed in the last 24h of conversation (e.g. they already said
+        # they're waiting on the surgeon, or already completed the ROI).
+        # This is NOT a post-filter on outgoing messages — it only decides
+        # what we *initiate*, before any message is drafted.
+        recent_conv = _load_recent_conversation(hours=24)
+        if recent_conv:
+            filtered_opportunities = []
+            for opp in opportunities:
+                if not _user_already_addressed(opp, recent_conv):
+                    filtered_opportunities.append(opp)
+            if not filtered_opportunities:
+                log.info(
+                    "All proactive opportunities filtered — user already "
+                    "addressed them in recent conversation."
+                )
+                return None
+            opportunities = filtered_opportunities
 
         # Combined score = relevance * timing, with a small random jitter
         best = max(opportunities, key=lambda o: o["relevance_score"] * o["timing_score"]

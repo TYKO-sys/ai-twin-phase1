@@ -338,7 +338,7 @@ class MultiProviderClient:
         if _mm:
             provider_order = _mm.get_provider_order()
         else:
-            provider_order = ["groq", "mistral", "openrouter", "cerebras", "zai", "gemini"]
+            provider_order = ["freellmapi", "groq", "mistral", "openrouter", "cerebras", "zai", "gemini"]
 
         # Map provider names to their API keys
         key_map = {

@@ -3,7 +3,7 @@
   "_last_updated": "2026-09-03",
   "providers": {
     "freellmapi": {
-      "base_url": "https://freellmapi.tashfeenahmed.repl.co/v1",
+      "base_url": "http://localhost:3001/v1",
       "models": [
         "auto",
         "gpt-4o-mini",
@@ -78,7 +78,15 @@
       "default_model": "gemini-3.7-flash"
     }
   },
-  "provider_order": ["groq", "mistral", "openrouter", "cerebras", "zai", "gemini"],
+  "provider_order": [
+    "freellmapi",
+    "groq",
+    "mistral",
+    "openrouter",
+    "cerebras",
+    "zai",
+    "gemini"
+  ],
   "rate_limit_cooldown_seconds": 60,
   "failure_cooldown_seconds": 30,
   "refresh_interval_hours": 6

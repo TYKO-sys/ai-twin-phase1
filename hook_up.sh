@@ -546,6 +546,25 @@ print(tool_read_rss(url='$RSS_URL', limit=2))
 done
 
 # ------------------------------------------------------------
+# 7.6. FreeLLMAPI local router (optional, recommended)
+# ------------------------------------------------------------
+print_step "Step 7.6: FreeLLMAPI local router (optional)"
+
+print_ask "Install FreeLLMAPI local router? This aggregates 34 free LLM providers (Groq, OpenRouter, Mistral, Cerebras, Gemini) behind one endpoint at localhost:3001. Highly recommended — gives the twin access to all providers with automatic failover. (y/N) "
+read -r DO_FREELLMAPI
+
+if [[ "$DO_FREELLMAPI" == "y" || "$DO_FREELLMAPI" == "Y" ]]; then
+    print_step "Installing FreeLLMAPI (5-10 minutes)"
+    if [[ -f ~/ai-twin/install_freellmapi.sh ]]; then
+        bash ~/ai-twin/install_freellmapi.sh
+    else
+        print_warn "install_freellmapi.sh not found. Skipping."
+    fi
+else
+    print_ok "Skipping FreeLLMAPI. Twin will use direct provider connections instead."
+fi
+
+# ------------------------------------------------------------
 # 8. Final health report
 # ------------------------------------------------------------
 print_step "Step 8: Final report"

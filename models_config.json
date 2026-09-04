@@ -1,7 +1,21 @@
 {
   "_comment": "Model configuration for AI Twin. This file is fetched remotely and cached locally.",
-  "_last_updated": "2026-08-31",
+  "_last_updated": "2026-09-03",
   "providers": {
+    "freellmapi": {
+      "base_url": "https://freellmapi.tashfeenahmed.repl.co/v1",
+      "models": [
+        "auto",
+        "gpt-4o-mini",
+        "claude-3-5-sonnet-20241022",
+        "deepseek-chat",
+        "gemini-flash-1.5",
+        "llama-3.1-70b-instruct",
+        "qwen-2.5-72b-instruct",
+        "mistral-large-latest"
+      ],
+      "default_model": "auto"
+    },
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
       "models": [
@@ -31,7 +45,7 @@
         "open-mistral-7b",
         "open-mixtral-8x7b"
       ],
-      "default_model": "mistral-small-latest"
+      "default_model": "open-mixtral-8x7b"
     },
     "cerebras": {
       "base_url": "https://api.cerebras.ai/v1",
@@ -45,19 +59,12 @@
     "zai": {
       "base_url": "https://api.z.ai/api/paas/v4",
       "models": [
+        "glm-4.6",
         "glm-4-flash",
         "glm-4-flashx",
         "glm-4"
       ],
-      "default_model": "glm-4-flash"
-    },
-    "deepseek": {
-      "base_url": "https://api.deepseek.com/v1",
-      "models": [
-        "deepseek-chat",
-        "deepseek-reasoner"
-      ],
-      "default_model": "deepseek-chat"
+      "default_model": "glm-4.6"
     },
     "gemini": {
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
@@ -71,7 +78,7 @@
       "default_model": "gemini-3.7-flash"
     }
   },
-  "provider_order": ["groq", "openrouter", "mistral", "cerebras", "zai", "gemini"],
+  "provider_order": ["freellmapi", "groq", "openrouter", "mistral", "cerebras", "zai", "gemini"],
   "rate_limit_cooldown_seconds": 60,
   "failure_cooldown_seconds": 30,
   "refresh_interval_hours": 6

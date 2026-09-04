@@ -330,6 +330,51 @@ def _wait_for_network(max_wait: int = 90) -> bool:
     return False
 
 
+def _wait_for_freellmapi(timeout_seconds: int = 60):
+    """Wait for FreeLLMAPI to be available before starting the bot.
+
+    FreeLLMAPI takes 15-30 seconds to start. If we don't wait, the twin's
+    first few calls will fail with 'Connection refused' and fall through
+    to slower providers.
+
+    Resilient: if anything fails, the twin still starts (just without waiting).
+    Only waits if FreeLLMAPI is the first provider in the active order.
+    """
+    try:
+        # Determine provider order — use ModelManager if available, else default
+        order = ["freellmapi", "groq", "mistral", "openrouter",
+                 "cerebras", "zai", "gemini"]
+        try:
+            from model_manager import get_model_manager
+            mm = get_model_manager()
+            cfg_order = mm.get_provider_order()
+            if cfg_order:
+                order = cfg_order
+        except Exception:
+            pass  # Use the default order
+
+        if not order or order[0] != "freellmapi":
+            return  # FreeLLMAPI not first, don't wait
+
+        log.info("Checking if FreeLLMAPI is available...")
+        for i in range(timeout_seconds // 2):
+            try:
+                resp = requests.get("http://localhost:3001/v1/models", timeout=2)
+                if resp.status_code in (200, 401, 403):
+                    log.info("FreeLLMAPI is up. Starting twin.")
+                    return
+            except Exception:
+                pass
+            time.sleep(2)
+
+        log.warning(
+            f"FreeLLMAPI not available after {timeout_seconds}s. "
+            f"Starting twin anyway (will fall through to other providers)."
+        )
+    except Exception as e:
+        log.error(f"Error waiting for FreeLLMAPI: {e}")
+
+
 def _send_typing(chat_id: int) -> None:
     """Send the 'typing' chat action."""
     try:
@@ -2424,6 +2469,12 @@ def main() -> None:
     checkin_thread = threading.Thread(target=_daily_check_in_loop, daemon=True)
     checkin_thread.start()
     log.info("Daily check-in thread started")
+
+    # Wait for FreeLLMAPI to come up (if it's the first provider in the
+    # order). FreeLLMAPI takes 15-30s to start; without this wait the
+    # twin's first calls hit "Connection refused" and fall through to
+    # slower providers, which the user sees as log noise + lag.
+    _wait_for_freellmapi(timeout_seconds=60)
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

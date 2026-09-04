@@ -99,6 +99,26 @@ fi
 cd ~/ai-twin
 
 # ------------------------------------------------------------
+# 3.5. Restore FreeLLMAPI key from permanent storage
+# ------------------------------------------------------------
+print_step "Step 3.5: Restore FreeLLMAPI key from permanent storage"
+PERMANENT_KEY_FILE="$HOME/ai-twin-memory/freellmapi_key.txt"
+if [[ -f "$PERMANENT_KEY_FILE" ]] && [[ -s "$PERMANENT_KEY_FILE" ]]; then
+    SAVED_KEY=$(cat "$PERMANENT_KEY_FILE" | tr -d '[:space:]')
+    if [[ -n "$SAVED_KEY" ]]; then
+        # Remove any existing FREELLMAPI_API_KEY line from .env
+        sed -i '/^FREELLMAPI_API_KEY=/d' ~/ai-twin/.env 2>/dev/null
+        # Add the saved key
+        echo "FREELLMAPI_API_KEY=$SAVED_KEY" >> ~/ai-twin/.env
+        print_ok "FreeLLMAPI key restored from permanent storage"
+    else
+        print_warn "Permanent key file is empty. You'll need to set the FreeLLMAPI key again."
+    fi
+else
+    print_warn "No permanent FreeLLMAPI key found. Run install_freellmapi.sh with your key to set it permanently."
+fi
+
+# ------------------------------------------------------------
 # 4. Update voice profile from latest template
 # ------------------------------------------------------------
 print_step "Step 4: Update voice profile"
@@ -371,6 +391,15 @@ if [[ -d "$HOME/.termux/boot" ]]; then
     print_ok "Termux:Boot: CONFIGURED (auto-starts on reboot)"
 else
     print_warn "Termux:Boot: NOT INSTALLED (twin won't auto-start on reboot)"
+fi
+
+# ------------------------------------------------------------
+# 14. Update .env backup to include the current state (with FreeLLMAPI key)
+# ------------------------------------------------------------
+print_step "Step 14: Update .env backup"
+if [[ -f ~/ai-twin/.env ]]; then
+    cp ~/ai-twin/.env "$HOME/.env.backup"
+    print_ok ".env backup updated (now includes FreeLLMAPI key if set)"
 fi
 
 # ------------------------------------------------------------

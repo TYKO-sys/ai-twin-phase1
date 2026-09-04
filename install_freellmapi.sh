@@ -123,6 +123,14 @@ if [[ -n "$UNIFIED_KEY" ]]; then
     echo "FREELLMAPI_API_KEY=$UNIFIED_KEY" >> "$ENV_FILE"
     print_ok "Unified key written to $ENV_FILE"
 
+    # ALSO save to permanent storage (survives updates)
+    PERMANENT_KEY_FILE="$HOME/ai-twin-memory/freellmapi_key.txt"
+    mkdir -p "$HOME/ai-twin-memory"
+    echo "$UNIFIED_KEY" > "$PERMANENT_KEY_FILE"
+    chmod 600 "$PERMANENT_KEY_FILE" 2>/dev/null || true
+    print_ok "Key also saved to permanent storage at $PERMANENT_KEY_FILE"
+    print_ok "This key will survive future updates — you won't need to set it again."
+
     # Restart twin
     print_step "Restarting twin"
     twin-stop 2>/dev/null

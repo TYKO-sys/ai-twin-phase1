@@ -126,29 +126,60 @@ USE_OPENROUTER = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
 # Backward compatibility: keep gemini_client as an alias
 gemini_client = llm_client
 
-with open(Path(__file__).parent / "system_prompt.txt", "r",
-          encoding="utf-8") as f:
-    SYSTEM_PROMPT = f.read()
+# Read the base system prompt
+with open(Path(__file__).parent / "system_prompt.txt", "r", encoding="utf-8") as f:
+    _base_prompt = f.read()
 
-# Load the user's voice profile (their actual writing style)
+# Build the voice profile block (goes at the TOP for primacy bias)
+_voice_block = ""
 _voice_path = Path.home() / "ai-twin-memory" / "voice_profile.md"
 if _voice_path.exists():
     _voice = _voice_path.read_text(encoding="utf-8").strip()
     if _voice:
-        SYSTEM_PROMPT += f"\n\n### USER'S VOICE PROFILE (loaded from disk)\n\n{_voice}\n"
+        _voice_block = (
+            "### YOUR VOICE — MANDATORY — ADOPT THIS FOR EVERY MESSAGE\n\n"
+            "This is YOUR voice. Not information about the user. YOUR voice when "
+            "you write to the user. Every message you send must sound like this. "
+            "This is not a suggestion. This is how you talk.\n\n"
+            f"{_voice}\n\n"
+        )
         log.info(f"Loaded voice profile from {_voice_path}")
     else:
-        SYSTEM_PROMPT += "\n\n### USER'S VOICE PROFILE\n\nNo voice profile set. Default to: short sentences, heavy contractions, casual tone, no fancy words, direct questions, no greetings or sign-offs.\n"
+        _voice_block = (
+            "### YOUR VOICE\n\nNo voice profile set. Default to: short sentences, "
+            "heavy contractions, casual tone, no fancy words, direct questions, "
+            "no greetings or sign-offs.\n\n"
+        )
 else:
-    SYSTEM_PROMPT += "\n\n### USER'S VOICE PROFILE\n\nNo voice profile set. Default to: short sentences, heavy contractions, casual tone, no fancy words, direct questions, no greetings or sign-offs.\n"
+    _voice_block = (
+        "### YOUR VOICE\n\nNo voice profile set. Default to: short sentences, "
+        "heavy contractions, casual tone, no fancy words, direct questions, "
+        "no greetings or sign-offs.\n\n"
+    )
 
-# Load the user's kill file (personal banned phrases)
+# Build the kill file block (goes right after the voice profile)
+_kill_block = ""
 _kill_path = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
 if _kill_path.exists():
     _kill = _kill_path.read_text(encoding="utf-8").strip()
     if _kill:
-        SYSTEM_PROMPT += f"\n\n### USER'S KILL FILE (personal banned phrases — never use these)\n\n{_kill}\n"
+        _kill_block = (
+            "### YOUR KILL FILE (personal banned phrases — never use these)\n\n"
+            f"{_kill}\n\n"
+        )
         log.info(f"Loaded kill file from {_kill_path}")
+
+# Build the final check block (goes at the BOTTOM for recency bias)
+_final_check = """
+### FINAL CHECK BEFORE EVERY MESSAGE
+
+Before you send any message to the user, re-read it. Does it sound like YOUR VOICE (the voice profile above)? If it sounds like a chatbot, an AI assistant, a helpful robot, a customer service agent, or anything other than a friend texting a friend — REWRITE IT.
+
+The voice profile is not a suggestion. It is how you talk. Every message. No exceptions. If you can't tell whether it sounds right, read it out loud — if it sounds like something you'd never text a friend, it's wrong.
+"""
+
+# Assemble: voice profile (primacy) + kill file + base prompt + final check (recency)
+SYSTEM_PROMPT = _voice_block + _kill_block + _base_prompt + _final_check
 
 # Track which memory files were used in the last response (for footer)
 _last_context_files: list[str] = []

@@ -377,23 +377,25 @@ echo "  - Termux:Boot auto-start (survives phone reboots)"
 echo ""
 echo "What to do next:"
 echo ""
-if [[ ! -f "$HOME/freellmapi" ]] || [[ ! -d "$HOME/freellmapi" ]]; then
-    echo -e "  ${YELLOW}FreeLLMAPI not installed.${NC}"
-    echo "  To install it: bash ~/ai-twin/install_freellmapi.sh"
-    echo "  Then re-run this script to enable auto-start"
-    echo ""
-else
-    # Check if unified key is in .env
-    if grep -q "^FREELLMAPI_API_KEY=." ~/ai-twin/.env 2>/dev/null; then
-        echo "  - FreeLLMAPI is installed and twin is pointed at it"
+if [[ -d "$HOME/freellmapi" ]]; then
+    # FreeLLMAPI is installed — check if it's actually running
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null | grep -q "200\|401\|403"; then
+        # FreeLLMAPI is installed and running — check if twin is pointed at it
+        if grep -q "^FREELLMAPI_API_KEY=." ~/ai-twin/.env 2>/dev/null; then
+            echo "  - FreeLLMAPI is installed and twin is pointed at it. You're all set."
+        else
+            echo -e "  ${YELLOW}FreeLLMAPI is running but twin isn't pointed at it yet.${NC}"
+            echo "  Get your unified key from http://localhost:5173 and run: bash ~/ai-twin/install_freellmapi.sh YOUR_KEY"
+        fi
     else
-        echo -e "  ${YELLOW}FreeLLMAPI is installed but twin isn't pointed at it yet.${NC}"
-        echo "  1. Open http://localhost:5173 in your browser"
-        echo "  2. Copy your unified API key from the Keys page"
-        echo "  3. Run: bash ~/ai-twin/install_freellmapi.sh YOUR_UNIFIED_KEY"
+        echo -e "  ${YELLOW}FreeLLMAPI is installed but not running.${NC}"
+        echo "  Start it: bash ~/ai-twin/final_update.sh"
     fi
-    echo ""
+else
+    echo -e "  ${YELLOW}FreeLLMAPI not installed.${NC}"
+    echo "  Run: bash ~/ai-twin/install_freellmapi.sh"
 fi
+echo ""
 
 echo "Useful commands:"
 echo -e "  ${CYAN}twin-start${NC}       start the twin"

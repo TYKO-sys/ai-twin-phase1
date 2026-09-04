@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import sys
 import threading
 import time
@@ -1035,19 +1036,61 @@ _kb_message_counter = 0  # messages since last KB update
 _KB_UPDATE_INTERVAL = 5  # update KB every N messages
 _KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
 
-# Proactive messaging system — EVENT-DRIVEN, NOT POLLING
-# Zero LLM token usage when idle. Only uses tokens when there's an actual event.
-# Events that trigger proactive messages:
-# 1. Appointment/deadline approaching (checked locally, no LLM needed)
-# 2. User has been silent for 2+ hours with open tasks (checked locally)
-# 3. Task is overdue (checked locally)
-# The LLM is only called to GENERATE the message text, never to DECIDE whether to send.
-_proactive_reminders_sent = set()  # Track which reminders we've already sent (prevent duplicates)
+# ----------------------------------------------------------------------
+# PROACTIVE MESSAGING — INTELLIGENT, NOT TIMER-BASED
+# ----------------------------------------------------------------------
+# Old approach: message every 2 hours of silence. Predictable. Bot-like.
+#
+# New approach: score reach-out opportunities every 15 minutes. Only
+# send when there's something specific to say. Variability built in:
+#   - 30% random skip even when trigger fires
+#   - 0-15min random delay after trigger
+#   - Max 3 proactive messages per day (excl. appointment reminders)
+#   - Min 2h gap between proactive messages
+#   - Don't message if user was emotional recently (give space)
+#   - Don't message during quiet hours (11pm-7am)
+#   - Don't message if user just messaged (within 30 min)
+#
+# Triggers scored:
+#   - Blocked tasks waiting on external dependency
+#   - Task deadline within 24-48 hours
+#   - Morning briefing (7-10am, once per day)
+#   - Midday light check (12-2pm, if silence > 3h)
+#   - Evening followup (5-8pm, if user had appointments)
+#   - Long silence (>6h, ONE message max — don't keep bugging)
+#   - New RSS content detected
+#
+# Each trigger has a relevance score and timing score. Combined
+# score must clear a threshold to send. This is what makes it feel
+# human — the twin reaches out when it has something to say, not
+# when a timer fires.
+# ----------------------------------------------------------------------
+
+# Appointment-reminder dedup set (shared by appointment + silence paths)
+_proactive_reminders_sent = set()
+
+# Old constants — kept for backward compat with _check_silence (which
+# is now unused by the smart loop but still defined below). The smart
+# loop does NOT read these.
 _last_silence_check_time = 0.0
-_SILENCE_CHECK_INTERVAL = 3600  # Check for silence every hour (not every minute)
-_PROACTIVE_QUIET_HOURS = (23, 7)  # don't message between 11pm and 7am
-_PROACTIVE_SILENCE_THRESHOLD = 7200  # 2 hours of silence triggers a check-in
-_PROACTIVE_CHECK_INTERVAL = 180  # Run the proactive loop every 3 minutes (local checks only, no tokens)
+_SILENCE_CHECK_INTERVAL = 3600  # deprecated; smart loop uses _PROACTIVE_CHECK_INTERVAL_SMART
+_PROACTIVE_SILENCE_THRESHOLD = 7200  # deprecated; smart loop scores silence windows differently
+
+# New proactive constants
+_PROACTIVE_CHECK_INTERVAL_SMART = 900  # Check every 15 minutes
+_PROACTIVE_MAX_DAILY = 3  # Max proactive (non-appointment) messages per day
+_PROACTIVE_MIN_GAP = 7200  # Min 2 hours between proactive messages
+_PROACTIVE_QUIET_HOURS = (23, 7)  # 11pm to 7am
+
+# New proactive state
+_proactive_sent_today = 0
+_proactive_last_reset_date = None
+_proactive_last_send_time = 0.0
+
+# Defensive: _last_user_message_time was only bound inside a handler.
+# The proactive loop reads it on every tick — make sure it exists at
+# module load time so the first ~15 min of idle don't crash the loop.
+_last_user_message_time = 0.0
 
 # Scheduled times (24-hour format) — DISABLED per user request
 # Morning/evening/weekly routines removed. The twin no longer pings on a schedule.
@@ -1112,48 +1155,382 @@ def _trigger_incremental_kb_update():
     threading.Thread(target=update_in_background, daemon=True).start()
 
 
-def _proactive_messaging_loop():
-    """Event-driven proactive messaging. Zero tokens when idle.
+def _proactive_messaging_loop_smart():
+    """Intelligent proactive messaging. Not timer-based.
 
-    This does NOT call the LLM every minute. It uses cheap local checks
-    (string parsing, timestamp comparison) to detect events. The LLM
-    is only called to generate the actual message text when an event
-    is confirmed.
+    Scores reach-out opportunities each check. Only sends when:
+    - There's something specific to say (not "just checking in")
+    - Timing fits the message
+    - Daily cap not exceeded
+    - Variability (30% random skip, 0-15min random delay)
 
-    Events:
-    1. Appointment within 1 hour → "Leave soon" reminder
-    2. Appointment within 24 hours → "Heads up" reminder (sent once)
-    3. User silent 2+ hours with open tasks → check-in (sent once per silence period)
-    4. Overdue task detected → gentle nudge (sent once per task)
+    A real friend doesn't text you every 2 hours on a schedule. They text
+    when they have something to share. So does this.
     """
-    log.info("Proactive messaging system started (event-driven, zero idle tokens)")
+    global _proactive_sent_today, _proactive_last_reset_date, _proactive_last_send_time
+
+    log.info("Smart proactive messaging started (event-scored, not timer-based)")
 
     while True:
-        time.sleep(_PROACTIVE_CHECK_INTERVAL)  # Check every 3 minutes (local checks only, no tokens)
+        time.sleep(_PROACTIVE_CHECK_INTERVAL_SMART)  # Check every 15 minutes
 
         try:
-            global _last_user_message_time
             now = datetime.now()
             now_ts = time.time()
+
+            # Reset daily counter at midnight
+            if _proactive_last_reset_date != now.date():
+                _proactive_sent_today = 0
+                _proactive_last_reset_date = now.date()
 
             # Quiet hours — no proactive messages 11pm to 7am
             if now.hour >= _PROACTIVE_QUIET_HOURS[0] or now.hour < _PROACTIVE_QUIET_HOURS[1]:
                 continue
 
-            # Don't proactive if user just messaged (within 30 minutes)
+            # User just messaged (within 30 min) — give them space
             if now_ts - _last_user_message_time < 1800:
                 continue
 
-            # Check 1: Appointment/deadline reminders (local string parsing, no tokens)
+            # Daily cap reached
+            if _proactive_sent_today >= _PROACTIVE_MAX_DAILY:
+                # Still check appointment reminders (time-critical, separate path)
+                _check_upcoming_appointments(now)
+                continue
+
+            # Min gap between proactive messages
+            if now_ts - _proactive_last_send_time < _PROACTIVE_MIN_GAP:
+                # Still check appointment reminders (time-critical, separate path)
+                _check_upcoming_appointments(now)
+                continue
+
+            # Check for emotional context — if user was emotional recently, give space
+            if _user_was_emotional_recently():
+                continue
+
+            # Check appointment reminders (still time-critical, separate path).
+            # These do NOT count toward the daily proactive cap.
             _check_upcoming_appointments(now)
 
-            # Check 2: Silence check-in (local, no tokens until message generation)
-            if now_ts - _last_silence_check_time > _SILENCE_CHECK_INTERVAL:
-                _last_silence_check_time = now_ts
-                _check_silence(now_ts)
+            # Score opportunities
+            opportunity = _score_proactive_opportunity(now)
+            if not opportunity:
+                continue
+
+            # 30% random skip (variability) — even valid triggers don't always fire
+            if random.random() < 0.30:
+                log.info(f"Proactive opportunity found ({opportunity['reason']}) — randomly skipped for variability")
+                continue
+
+            # Random delay 0-15 minutes (so timing isn't predictable)
+            delay_seconds = random.randint(0, 900)
+            log.info(f"Proactive opportunity: {opportunity['reason']}. Sending in {delay_seconds}s.")
+
+            # Sleep in chunks so a shutdown is responsive (daemon thread dies with
+            # the process anyway, but chunking avoids holding a long sleep that
+            # would block testing). 60s chunks.
+            slept = 0
+            while slept < delay_seconds:
+                time.sleep(min(60, delay_seconds - slept))
+                slept += 60
+                # If the user messaged during the delay, abort — they're here.
+                if time.time() - _last_user_message_time < 300:
+                    log.info("User messaged during delay. Skipping proactive.")
+                    slept = delay_seconds  # break out
+                    break
+
+            # Re-check after delay (in case user messaged during the delay)
+            if time.time() - _last_user_message_time < 300:
+                continue
+
+            # Send the message
+            _send_smart_proactive(opportunity)
+
+            _proactive_sent_today += 1
+            _proactive_last_send_time = time.time()
 
         except Exception as e:
-            log.error(f"Proactive check error: {e}")
+            log.error(f"Smart proactive check error: {e}")
+
+
+def _user_was_emotional_recently() -> bool:
+    """Check if the user sent something emotional in the last hour.
+
+    If so, give them space — don't proactively message.
+    """
+    try:
+        log_path = Path(MEMORY_DIR) / "today.md"
+        if not log_path.exists():
+            return False
+
+        # Get the last ~2KB of the conversation log
+        content = log_path.read_text(encoding="utf-8")
+        recent = content[-2000:] if len(content) > 2000 else content
+        recent_lower = recent.lower()
+
+        # Only consider it "emotional" if the message is from the LAST HOUR.
+        # today.md entries are timestamped; cheap check: look for a recent
+        # timestamp near the tail of the file. If the file's mtime is older
+        # than an hour, the user clearly hasn't said anything recently.
+        mtime = log_path.stat().st_mtime
+        if time.time() - mtime > 3600:
+            return False
+
+        emotional_markers = [
+            "i need you", "i'm tired", "i cant", "i can't", "i'm done", "i'm over it",
+            "help", "i don't know", "i dont know", "i'm scared", "i'm overwhelmed",
+            "i miss", "i hate this", "this is hard", "give up",
+            "my babe", "im tired", "im done", "im over it", "im scared",
+            "im overwhelmed", "exhausted", "burnt out", "burned out",
+        ]
+        for marker in emotional_markers:
+            if marker in recent_lower:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
+    """Find something specific to reach out about. Returns the opportunity or None.
+
+    Looks for concrete reasons to message — not just "you've been silent."
+    """
+    opportunities = []
+
+    try:
+        # Load tasks once — used by multiple checks
+        try:
+            from tools import _load_tasks, tool_task_review
+            tasks = _load_tasks()
+            review = tool_task_review()
+        except Exception:
+            tasks = []
+            review = ""
+
+        # 1. Blocked task waiting on external dependency
+        if tasks and review and "BLOCKED" in review:
+            blocked_tasks = [t for t in tasks
+                             if t.get("status") in ("blocked", "waiting")]
+            if blocked_tasks:
+                opportunities.append({
+                    "reason": "blocked_tasks",
+                    "context": review[:500],
+                    "timing_score": 0.7,
+                    "relevance_score": 0.8,
+                })
+
+        # 2. Task with deadline in next 24-48 hours
+        soon = now + timedelta(hours=48)
+        import re
+        for t in tasks:
+            due_str = t.get("due_date", "")
+            if not due_str:
+                continue
+            try:
+                date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', due_str)
+                if date_match:
+                    due_date = datetime(int(date_match.group(1)),
+                                        int(date_match.group(2)),
+                                        int(date_match.group(3)))
+                    if now < due_date <= soon:
+                        opportunities.append({
+                            "reason": "deadline_approaching",
+                            "context": f"Task '{t.get('title', 'unknown')}' is due {due_str}",
+                            "timing_score": 0.9,
+                            "relevance_score": 0.9,
+                        })
+            except Exception:
+                pass
+
+        # 3. Time-of-day based opportunity (only if there's something to say)
+        hour = now.hour
+        if 7 <= hour < 10:
+            # Morning — could send "here's what's on your plate" if we haven't yet today
+            if not _sent_morning_briefing_today():
+                if tasks:
+                    active_tasks = [t for t in tasks if t.get("status") == "active"]
+                    if active_tasks:
+                        opportunities.append({
+                            "reason": "morning_briefing",
+                            "context": review[:500] if review else
+                                      f"You have {len(active_tasks)} active tasks.",
+                            "timing_score": 0.8,
+                            "relevance_score": 0.7,
+                        })
+        elif 12 <= hour < 14:
+            # Midday — could send a light "you good?" if silence is long
+            silence_hours = (time.time() - _last_user_message_time) / 3600
+            if silence_hours > 3:
+                opportunities.append({
+                    "reason": "midday_check",
+                    "context": f"Silent for {silence_hours:.1f}h. Light check-in.",
+                    "timing_score": 0.5,
+                    "relevance_score": 0.4,
+                })
+        elif 17 <= hour < 20:
+            # Evening — could ask "how'd today go" if there were appointments today
+            try:
+                upcoming = kb.get_domain("upcoming.md") or ""
+                today_str = now.strftime("%Y-%m-%d")
+                if today_str in upcoming:
+                    opportunities.append({
+                        "reason": "evening_followup",
+                        "context": "You had appointments today. How'd they go?",
+                        "timing_score": 0.7,
+                        "relevance_score": 0.8,
+                    })
+            except Exception:
+                pass
+        # 21-23 (late evening): intentionally NOT a trigger — let the user
+        # initiate reflection. Don't push reflection on them.
+
+        # 4. Silence that's longer than usual — only ONE message, not repeated
+        silence_hours = (time.time() - _last_user_message_time) / 3600
+        if silence_hours > 6:
+            silence_key = f"long_silence_{int(_last_user_message_time)}"
+            if silence_key not in _proactive_reminders_sent:
+                opportunities.append({
+                    "reason": "long_silence",
+                    "context": f"Silent for {silence_hours:.1f}h.",
+                    "timing_score": 0.4,
+                    "relevance_score": 0.3,
+                    "dedup_key": silence_key,
+                })
+
+        # 5. New RSS items in user's subscribed feeds
+        try:
+            rss_seen_path = Path(MEMORY_DIR) / "rss_seen.json"
+            if rss_seen_path.exists():
+                mtime = rss_seen_path.stat().st_mtime
+                if time.time() - mtime < 1800:
+                    opportunities.append({
+                        "reason": "new_rss_content",
+                        "context": "New content in your RSS feeds. Want me to send the digest?",
+                        "timing_score": 0.6,
+                        "relevance_score": 0.7,
+                    })
+        except Exception:
+            pass
+
+        # Score and pick the best opportunity
+        if not opportunities:
+            return None
+
+        # Combined score = relevance * timing, with a small random jitter
+        best = max(opportunities, key=lambda o: o["relevance_score"] * o["timing_score"]
+                                          + random.random() * 0.1)
+
+        # If the best score is too low, don't send — better silent than spammy
+        if best["relevance_score"] * best["timing_score"] < 0.3:
+            return None
+
+        return best
+
+    except Exception as e:
+        log.error(f"Opportunity scoring error: {e}")
+        return None
+
+
+def _sent_morning_briefing_today() -> bool:
+    """Check if we already sent a morning briefing today."""
+    try:
+        tracker = Path(MEMORY_DIR) / "proactive_state.json"
+        if not tracker.exists():
+            return False
+        import json
+        state = json.loads(tracker.read_text(encoding="utf-8"))
+        return state.get("morning_briefing_date") == datetime.now().date().isoformat()
+    except Exception:
+        return False
+
+
+def _mark_morning_briefing_sent():
+    """Record that we sent the morning briefing today."""
+    try:
+        tracker = Path(MEMORY_DIR) / "proactive_state.json"
+        import json
+        state = {}
+        if tracker.exists():
+            state = json.loads(tracker.read_text(encoding="utf-8"))
+        state["morning_briefing_date"] = datetime.now().date().isoformat()
+        tracker.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Could not mark morning briefing sent: {e}")
+
+
+def _send_smart_proactive(opportunity: dict):
+    """Send an intelligent proactive message based on the opportunity."""
+    try:
+        reason = opportunity.get("reason", "unknown")
+        context = opportunity.get("context", "")
+
+        # Different prompts for different reasons
+        if reason == "morning_briefing":
+            prompt = f"""Write a 2-4 sentence morning brief to TYKO about today. Reference specific tasks. End with one direct question. Casual, lowercase, contractions, no AI-speak.
+
+Task context:
+{context}
+
+Write the message:"""
+            _mark_morning_briefing_sent()
+        elif reason == "blocked_tasks":
+            prompt = f"""Write a 1-2 sentence check-in to TYKO. They have blocked tasks. Don't nag. Just acknowledge the situation and ask if they want help. Casual, lowercase, contractions, no AI-speak.
+
+Task context:
+{context}
+
+Write the message:"""
+        elif reason == "deadline_approaching":
+            prompt = f"""Write a 1-2 sentence reminder to TYKO about a deadline. Be specific. End with one direct question. Casual, lowercase, contractions, no AI-speak.
+
+Context:
+{context}
+
+Write the message:"""
+        elif reason == "midday_check":
+            prompt = """Write a 1-sentence light check-in to TYKO. Not clingy. Just "you good?" energy. Casual, lowercase, contractions, no AI-speak.
+
+Write the message:"""
+        elif reason == "evening_followup":
+            prompt = f"""Write a 1-2 sentence evening check-in to TYKO about their appointments today. Casual, lowercase, contractions, no AI-speak.
+
+Context:
+{context}
+
+Write the message:"""
+        elif reason == "long_silence":
+            prompt = f"""Write a 1-sentence check-in to TYKO who's been silent for a while. Not clingy. Just "what's up" energy. Casual, lowercase, contractions, no AI-speak.
+
+Context:
+{context}
+
+Write the message:"""
+        elif reason == "new_rss_content":
+            prompt = """Write a 1-sentence note to TYKO saying there's new content in their RSS feeds if they want to check. Casual, lowercase, contractions, no AI-speak.
+
+Write the message:"""
+        else:
+            log.warning(f"Unknown proactive reason: {reason} — skipping")
+            return  # Unknown reason, don't send
+
+        response = llm_client.generate(
+            prompt=prompt,
+            system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak. No 'how are you' openers. No 'just checking in.'",
+        )
+        msg = (response or "").strip()
+        if msg:
+            _send_telegram_message(ALLOWED_USER_ID, msg)
+            cm.append_to_today("twin", f"Smart proactive: {reason}",
+                               observation="proactive")
+            log.info(f"Sent smart proactive: {reason}")
+
+            # Mark dedup keys (e.g., long_silence) so the same trigger
+            # doesn't fire again for the same silence period.
+            dedup_key = opportunity.get("dedup_key")
+            if dedup_key:
+                _proactive_reminders_sent.add(dedup_key)
+    except Exception as e:
+        log.error(f"Smart proactive send failed: {e}")
 
 
 def _check_upcoming_appointments(now: datetime):
@@ -1897,11 +2274,11 @@ def main() -> None:
     scheduler_thread.start()
     log.info("Scheduler thread started")
 
-    # Start the proactive messaging system in a background thread
-    proactive_thread = threading.Thread(target=_proactive_messaging_loop,
+    # Start the proactive messaging system in a background thread (smart, scored)
+    proactive_thread = threading.Thread(target=_proactive_messaging_loop_smart,
                                          daemon=True)
     proactive_thread.start()
-    log.info("Proactive messaging thread started")
+    log.info("Smart proactive messaging thread started")
 
     # Start the website monitoring thread
     monitor_thread = threading.Thread(target=_website_monitoring_loop,

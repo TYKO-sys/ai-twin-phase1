@@ -1314,30 +1314,23 @@ def _user_was_emotional_recently() -> bool:
     If so, give them space — don't proactively message.
     """
     try:
-        log_path = Path(MEMORY_DIR) / "today.md"
+        from datetime import datetime as _dt
+        daily_dir = Path(MEMORY_DIR) / "daily"
+        log_path = daily_dir / f"{_dt.now().strftime('%Y-%m-%d')}.md"
         if not log_path.exists():
             return False
 
-        # Get the last ~2KB of the conversation log
         content = log_path.read_text(encoding="utf-8")
+        # Get the last ~2KB of today's log
         recent = content[-2000:] if len(content) > 2000 else content
-        recent_lower = recent.lower()
-
-        # Only consider it "emotional" if the message is from the LAST HOUR.
-        # today.md entries are timestamped; cheap check: look for a recent
-        # timestamp near the tail of the file. If the file's mtime is older
-        # than an hour, the user clearly hasn't said anything recently.
-        mtime = log_path.stat().st_mtime
-        if time.time() - mtime > 3600:
-            return False
 
         emotional_markers = [
-            "i need you", "i'm tired", "i cant", "i can't", "i'm done", "i'm over it",
-            "help", "i don't know", "i dont know", "i'm scared", "i'm overwhelmed",
+            "i need you", "i'm tired", "i can't", "i'm done", "i'm over it",
+            "help", "i don't know", "i'm scared", "i'm overwhelmed",
             "i miss", "i hate this", "this is hard", "give up",
-            "my babe", "im tired", "im done", "im over it", "im scared",
-            "im overwhelmed", "exhausted", "burnt out", "burned out",
+            "my babe", "i need you",
         ]
+        recent_lower = recent.lower()
         for marker in emotional_markers:
             if marker in recent_lower:
                 return True
@@ -1347,21 +1340,33 @@ def _user_was_emotional_recently() -> bool:
 
 
 def _load_recent_conversation(hours: int = 24) -> str:
-    """Load the last N hours of conversation from the today.md log.
+    """Load the last N hours of conversation from the daily log.
 
-    Returns up to the last 8000 chars of the conversation log (recent text
-    near the tail is what matters for "did the user already address this").
+    Returns up to the last 16000 chars of the conversation log.
+    Reads today's and yesterday's daily logs from ~/ai-twin-memory/daily/YYYY-MM-DD.md
     """
     try:
-        log_path = Path.home() / "ai-twin-memory" / "today.md"
-        if not log_path.exists():
-            # Fall back to MEMORY_DIR override (e.g. when running under tests)
-            log_path = Path(MEMORY_DIR) / "today.md"
-            if not log_path.exists():
-                return ""
-        content = log_path.read_text(encoding="utf-8")
-        if len(content) > 8000:
-            return content[-8000:]
+        from datetime import datetime as _dt
+        daily_dir = Path(MEMORY_DIR) / "daily"
+
+        # Read today's log
+        today_path = daily_dir / f"{_dt.now().strftime('%Y-%m-%d')}.md"
+        content = ""
+        if today_path.exists():
+            content += today_path.read_text(encoding="utf-8")
+
+        # Also read yesterday's log (in case conversation spans midnight)
+        from datetime import timedelta
+        yesterday_path = daily_dir / f"{(_dt.now() - timedelta(days=1)).strftime('%Y-%m-%d')}.md"
+        if yesterday_path.exists():
+            content = yesterday_path.read_text(encoding="utf-8") + "\n" + content
+
+        if not content:
+            return ""
+
+        # Return the last 16000 chars (increased from 8000 to match context_manager)
+        if len(content) > 16000:
+            return content[-16000:]
         return content
     except Exception:
         return ""

@@ -420,44 +420,76 @@ class MultiProviderClient:
 
     def generate(self, prompt: str, system_instruction: str = None,
                  image_bytes: bytes = None) -> str:
-        """Try providers in order until one succeeds."""
+        """Try providers in order until one succeeds. Failover on any error."""
         # Try last good provider first (sticky)
         order = list(self.providers)
         if self._last_good_provider:
             # Move last good to front
             order.sort(key=lambda x: 0 if x[0] == self._last_good_provider else 1)
 
+        last_error = None
         for name, client in order:
             # Skip providers in cooldown
             if hasattr(client, "is_available") and not client.is_available():
                 continue
 
-            result = client.generate(
-                prompt=prompt,
-                system_instruction=system_instruction,
-                image_bytes=image_bytes,
-            )
+            try:
+                result = client.generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    image_bytes=image_bytes,
+                )
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    f"Provider {name} raised in generate: "
+                    f"{type(e).__name__}: {e}. Failing over to next provider."
+                )
+                if hasattr(client, "mark_failed"):
+                    try:
+                        client.mark_failed()
+                    except Exception:
+                        pass
+                continue
 
             if result and not result.startswith("("):
                 self._last_good_provider = name
-                log.info(f"Provider {name} succeeded ({len(result)} chars)")
+                log.info(f"Provider {name} succeeded for generate ({len(result)} chars)")
                 return result
             elif result:
-                log.warning(f"Provider {name} returned error: {result[:100]}")
+                log.warning(
+                    f"Provider {name} returned error in generate: {result[:100]}. "
+                    f"Failing over to next provider."
+                )
+                if hasattr(client, "mark_failed"):
+                    try:
+                        client.mark_failed()
+                    except Exception:
+                        pass
             else:
-                log.warning(f"Provider {name} returned None")
+                log.warning(f"Provider {name} returned None in generate. Failing over to next provider.")
 
+        if last_error:
+            log.error(f"All providers failed in generate. Last error: {last_error}")
         return "(All AI providers are unavailable. Check your API keys and try again in a minute.)"
 
     def generate_with_tools(self, prompt: str, system_instruction: str = None,
                             tools_config: dict = None,
                             tool_executor: Callable = None,
                             max_iterations: int = 5) -> str:
-        """Try providers in order with tool support."""
+        """Try providers in order with tool support. Failover on any error.
+
+        If a provider rate-limits or raises mid-loop, we retry the next
+        provider from scratch. The user's message and the twin's
+        understanding (system + knowledge base + today's messages) live in
+        the prompt itself, so they survive the failover. Tool-call history
+        from earlier iterations is lost — accepted trade-off vs. failing.
+        """
         order = list(self.providers)
         if self._last_good_provider:
             order.sort(key=lambda x: 0 if x[0] == self._last_good_provider else 1)
 
+        last_error = None
         for name, client in order:
             # Skip providers in cooldown
             if hasattr(client, "is_available") and not client.is_available():
@@ -468,21 +500,44 @@ class MultiProviderClient:
                 # Gemini client has different interface — skip for tool calls
                 continue
 
-            result = client.generate_with_tools(
-                prompt=prompt,
-                system_instruction=system_instruction,
-                tools_config=tools_config,
-                tool_executor=tool_executor,
-                max_iterations=max_iterations,
-            )
+            try:
+                result = client.generate_with_tools(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    tools_config=tools_config,
+                    tool_executor=tool_executor,
+                    max_iterations=max_iterations,
+                )
+            except Exception as e:
+                last_error = e
+                log.warning(
+                    f"Provider {name} raised in generate_with_tools: "
+                    f"{type(e).__name__}: {e}. Failing over to next provider."
+                )
+                if hasattr(client, "mark_failed"):
+                    try:
+                        client.mark_failed()
+                    except Exception:
+                        pass
+                continue
 
             if result and not result.startswith("("):
                 self._last_good_provider = name
-                log.info(f"Provider {name} succeeded with tools ({len(result)} chars)")
+                log.info(f"Provider {name} succeeded for generate_with_tools ({len(result)} chars)")
                 return result
             elif result:
-                log.warning(f"Provider {name} returned error in tool loop")
+                log.warning(
+                    f"Provider {name} returned error in tool loop: {result[:100]}. "
+                    f"Failing over to next provider."
+                )
+                if hasattr(client, "mark_failed"):
+                    try:
+                        client.mark_failed()
+                    except Exception:
+                        pass
             else:
-                log.warning(f"Provider {name} returned None in tool loop")
+                log.warning(f"Provider {name} returned None in tool loop. Failing over to next provider.")
 
+        if last_error:
+            log.error(f"All providers failed in generate_with_tools. Last error: {last_error}")
         return "(All AI providers are unavailable. Check your API keys and try again in a minute.)"

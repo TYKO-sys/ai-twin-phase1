@@ -1042,7 +1042,9 @@ _last_weekly_date = None
 # Track incremental knowledge base updates
 _last_kb_update_time = 0.0  # timestamp of last KB update
 _kb_message_counter = 0  # messages since last KB update
-_KB_UPDATE_INTERVAL = 5  # update KB every N messages
+_KB_UPDATE_INTERVAL = 3  # update KB every N messages (small window so things
+                         # said between refreshes are not lost when today's
+                         # conversation truncates)
 _KB_MIN_SECONDS_BETWEEN = 120  # at least 2 minutes between updates
 
 # ----------------------------------------------------------------------

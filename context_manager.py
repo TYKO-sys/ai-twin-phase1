@@ -292,9 +292,11 @@ class ContextManager:
         today = self.get_today_context()
         if today:
             # Keep today's messages but truncate if very long
-            # (we keep the most recent 4000 chars for conversation flow)
-            if len(today) > 4000:
-                today = "...[earlier today truncated]...\n\n" + today[-4000:]
+            # (we keep the most recent 16000 chars for conversation flow)
+            # 16000 chars ≈ 4000 tokens, well within all provider context windows
+            # (FreeLLMAPI/Groq/Mistral Large all support 100K+ token context)
+            if len(today) > 16000:
+                today = "...[earlier today truncated]...\n\n" + today[-16000:]
             parts.append("# Today's conversation so far\n\n" + today)
         else:
             parts.append("# Today's conversation so far\n\n_(no messages yet today)_")

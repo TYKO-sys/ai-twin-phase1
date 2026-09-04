@@ -1383,15 +1383,31 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
     context = (opportunity.get("context", "") or "").lower()
     conv_lower = recent_conv.lower()
 
-    # Completion / "already handled" markers — if these appear near a task
-    # term, the user already addressed it.
+    # Completion markers — user said it's done
     completion_markers = [
         "i already did", "i already", "i told you", "i said this",
         "i completed", "i done", "already done", "already completed",
         "for the last time", "i already got", "i got the",
         "i haven't even", "i haven't started", "i haven't opened",
-        "i'm waiting on", "waiting for", "i'm waiting for",
-        "i told you already", "exactly",  # "Exactly" was the user's confirmation
+        "i told you already", "exactly",
+        # NEW: user submitted/completed something
+        "i finished", "i submitted", "i sent it", "just submitted",
+        "just finished",
+    ]
+
+    # Blocked markers — user said they tried but it's blocked on an external party
+    blocked_markers = [
+        "didn't answer", "didn't respond", "didn't reply", "no answer",
+        "no response", "they didn't", "they haven't", "haven't heard back",
+        "waiting on", "waiting for", "still waiting", "i'm waiting",
+        "they're closed", "office was closed", "office is closed",
+        "closed today", "closed tomorrow", "closed on",
+        "couldn't reach", "can't reach", "couldn't get through",
+        "voicemail", "left a message", "left a voicemail",
+        "they said they would", "they said they'd",
+        "i tried", "i tried to", "i tried calling", "i tried emailing",
+        "didn't pick up", "didn't pick up the phone",
+        "tried but", "tried to but",
     ]
 
     # Map opportunity contexts to key terms we should look for near markers.
@@ -1399,7 +1415,7 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
     if "dr lu" in context or "mobilitylink" in context or "mta" in context:
         key_terms.extend(["dr lu", "dr. lu", "mobilitylink", "mta"])
     if "ryan white" in context or "ride" in context or "labcorp" in context or "ortho" in context:
-        key_terms.extend(["ryan white", "ride", "labcorp", "ortho"])
+        key_terms.extend(["ryan white", "ride", "labcorp", "ortho", "orthopedic", "surgeon"])
     if "wgu" in context or "scholarship" in context:
         key_terms.extend(["wgu", "scholarship"])
     if "surgeon" in context or "most" in context:
@@ -1417,7 +1433,10 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
         return False
 
     # If any key term appears in the conversation with a completion marker
-    # nearby (within a 200-char window on either side), skip this opportunity.
+    # OR a blocked marker nearby (within a 200-char window on either side),
+    # skip this opportunity — the user already addressed it (either by doing
+    # it or by being blocked on an external party).
+    all_markers = completion_markers + blocked_markers
     for term in key_terms:
         term_pos = 0
         while True:
@@ -1427,7 +1446,7 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
             window_start = max(0, term_pos - 200)
             window_end = min(len(conv_lower), term_pos + 200)
             window = conv_lower[window_start:window_end]
-            for marker in completion_markers:
+            for marker in all_markers:
                 if marker in window:
                     log.info(
                         f"Skipping proactive opportunity '{reason}' — user "

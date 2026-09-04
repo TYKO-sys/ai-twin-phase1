@@ -229,6 +229,20 @@ if [[ ! -f "$PROFILE" ]] || ! grep -q "ensure_freellmapi.sh" "$PROFILE" 2>/dev/n
     print_ok "Added FreeLLMAPI auto-start to ~/.profile"
 fi
 
+# Fix existing .bashrc if it has the old wrong filename
+if [[ -f "$HOME/.bashrc" ]]; then
+    if grep -q "ensure_free_llmapi.sh" "$HOME/.bashrc"; then
+        sed -i 's/ensure_free_llmapi.sh/ensure_freellmapi.sh/g' "$HOME/.bashrc"
+        print_ok "Fixed wrong filename in ~/.bashrc (ensure_free_llmapi.sh → ensure_freellmapi.sh)"
+    fi
+fi
+if [[ -f "$HOME/.profile" ]]; then
+    if grep -q "ensure_free_llmapi.sh" "$HOME/.profile"; then
+        sed -i 's/ensure_free_llmapi.sh/ensure_freellmapi.sh/g' "$HOME/.profile"
+        print_ok "Fixed wrong filename in ~/.profile"
+    fi
+fi
+
 # ------------------------------------------------------------
 # 9. Set up Termux:Boot auto-start for FreeLLMAPI (if installed)
 # ------------------------------------------------------------

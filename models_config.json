@@ -78,7 +78,7 @@
       "default_model": "gemini-3.7-flash"
     }
   },
-  "provider_order": ["freellmapi", "groq", "openrouter", "mistral", "cerebras", "zai", "gemini"],
+  "provider_order": ["groq", "mistral", "openrouter", "cerebras", "zai", "gemini"],
   "rate_limit_cooldown_seconds": 60,
   "failure_cooldown_seconds": 30,
   "refresh_interval_hours": 6

@@ -548,9 +548,19 @@ class GeminiClient:
                                 f"{result[:200]}..."
                             )
 
-                            # Add function response to history
+                            # Add function response to history.
+                            # NOTE: Native Gemini API (:generateContent) no
+                            # longer accepts role="function" — it returns
+                            # "Role 'function' is not supported. Please use a
+                            # valid role: SYSTEM, SYSTEM_1, USER, ASSISTANT,
+                            # DEVELOPER, CONTEXT, USER_CONTEXT, MODEL, USER."
+                            # Google's current convention for function
+                            # responses is role="user" with functionResponse
+                            # parts. (The OpenAI-compatible endpoint uses
+                            # role="tool" + tool_call_id, but this client
+                            # uses the native API.)
                             contents.append({
-                                "role": "function",
+                                "role": "user",
                                 "parts": [{
                                     "functionResponse": {
                                         "name": func_name,

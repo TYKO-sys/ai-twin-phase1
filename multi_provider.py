@@ -370,7 +370,7 @@ class MultiProviderClient:
                 "groq": ("https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
                 "openrouter": ("https://openrouter.ai/api/v1", "openrouter/free"),
                 "freellmapi": ("https://freellmapi.tashfeenahmed.repl.co/v1", "auto"),
-                "mistral": ("https://api.mistral.ai/v1", "mistral-large-latest"),
+                "mistral": ("https://api.mistral.ai/v1", "open-mixtral-8x7b"),
                 "cerebras": ("https://api.cerebras.ai/v1", "gemma-4-31b"),
                 "zai": ("https://api.z.ai/api/paas/v4", "glm-4.6"),
             }

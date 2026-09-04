@@ -42,7 +42,7 @@ CACHE_FILE = Path.home() / "ai-twin-memory" / "models_cache.json"
 # This should point to a raw GitHub file that can be updated independently
 REMOTE_CONFIG_URL = os.environ.get(
     "MODELS_CONFIG_URL",
-    "https://raw.githubusercontent.com/TYKO-sys/ai-twin-phase1/main/models_config.json"
+    "https://raw.githubusercontent.com/TYKO-sys/ai-twin-phase1/phase2/models_config.json"
 )
 
 # Refresh interval (6 hours)

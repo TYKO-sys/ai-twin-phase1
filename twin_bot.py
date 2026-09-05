@@ -37,6 +37,7 @@ Design choices:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -198,10 +199,21 @@ forget_pending: str = ""
 _debug_mode: bool = False
 
 # Message processing lock — ensures only one message is processed at a time.
-# telebot processes sequentially by default, but we use this to send a
-# "I see your message, processing..." notification when messages queue up.
+# telebot processes handlers in a thread pool, so we need this lock to:
+#  1. atomically check-and-set _currently_processing (no race between
+#     two threads both seeing False and both proceeding)
+#  2. protect _pending_messages (the silent queue of messages that
+#     arrive while we're already processing)
+# The lock is only held for very short critical sections — never while
+# calling the LLM or sending Telegram messages — so there is no deadlock
+# risk (single lock, no nested acquisition, no I/O under the lock).
 _processing_lock = threading.Lock()
 _currently_processing = False
+# Messages that arrived while we were processing another message.
+# Drained after the in-flight response finishes; the LLM is then
+# re-prompted with all of them combined so the user gets one cohesive
+# follow-up instead of "I see your message, hold on" + separate replies.
+_pending_messages: list = []
 
 # ----------------------------------------------------------------------
 # Cross-message "i'm here" tracker (FIX 4)
@@ -955,30 +967,46 @@ def handle_text(message):
     # them about, cancel that reminder — they already know.
     _cancel_redundant_reminders(text)
 
-    # Check if we're already processing another message.
-    # telebot processes sequentially, so if the user sent multiple messages
-    # quickly, the earlier ones are still being processed. Let them know
-    # we see their message but need a moment.
+    # FEATURE 2 — Silent queueing when already processing.
+    # The OLD behavior was to send "I see your message, give me a moment"
+    # for every message that arrived while we were busy — annoying, and
+    # the user got a separate reply for each one. The NEW behavior: queue
+    # silently, and after the in-flight response finishes, re-prompt the
+    # LLM with ALL queued messages combined into one follow-up.
+    #
+    # Atomic check-and-set under the lock — no race between two handler
+    # threads both seeing _currently_processing == False and both
+    # proceeding. The lock is only held for this critical section; the
+    # LLM call and Telegram sends happen WITHOUT the lock held, so there
+    # is no deadlock risk (single lock, no nested acquisition, no I/O
+    # under the lock).
     global _currently_processing
-    if _currently_processing:
-        try:
-            bot.send_message(
-                message.chat.id,
-                "I see your message. Give me a moment — I'm still thinking "
-                "about your previous one. I'll get to this right after.",
-                timeout=30,
+    with _processing_lock:
+        if _currently_processing:
+            _pending_messages.append(text)
+            log.info(
+                f"Message queued while processing: {text[:50]}... "
+                f"(queue: {len(_pending_messages)})"
             )
-        except Exception:
-            pass
+            return  # Don't respond — we'll handle it after current processing finishes
+        _currently_processing = True
 
-    # Acquire lock and process
-    _currently_processing = True
     try:
         _send_typing(message.chat.id)
         prompt = _build_gemini_prompt(text)
         reply = _call_gemini(prompt) + _footer()
+
+        # FEATURE 1 — If every LLM provider failed, save the user's
+        # message to the unanswered queue so we can reprocess it on the
+        # next twin restart (when providers are back). The error reply
+        # is still sent to the user so they see what happened.
+        if reply and "All AI providers are unavailable" in reply:
+            _save_to_unanswered_queue(text)
+
         cm.append_to_today("twin", reply)
-        _safe_reply(message, reply)
+        # FEATURE 3 — Send the reply, splitting on `---` into multiple
+        # Telegram messages if the AI chose to use them.
+        _send_fragmented_reply(reply)
 
         # Auto-update knowledge base after conversations (not just evening)
         # This runs in a background thread so it doesn't delay the response
@@ -987,8 +1015,83 @@ def handle_text(message):
             _trigger_incremental_kb_update()
         except Exception as e:
             log.error(f"Incremental KB update trigger failed: {e}")
-    finally:
-        _currently_processing = False
+
+        # FEATURE 2 — Drain the pending queue. After the in-flight
+        # response is sent, check if any messages arrived while we were
+        # busy. If yes, combine them into one and re-prompt the LLM with
+        # explicit framing ("earlier messages you sent while I was
+        # thinking"), so the AI writes ONE cohesive reply that addresses
+        # all of them — not separate replies for each.
+        #
+        # Loop continues until the queue is empty, so messages that
+        # arrive WHILE we're reprocessing are picked up too.
+        while True:
+            with _processing_lock:
+                if not _pending_messages:
+                    _currently_processing = False
+                    break
+                # Combine all pending messages into one
+                combined = "\n".join(_pending_messages)
+                _pending_messages = []
+                # Stay in processing mode — _currently_processing stays True
+                pending_count = combined.count("\n") + 1
+
+            log.info(
+                f"Reprocessing {pending_count} pending message(s) combined "
+                f"(~{len(combined)} chars)..."
+            )
+            try:
+                _send_typing(message.chat.id)
+                reprocess_prompt = _build_gemini_prompt(
+                    f"[Earlier messages you sent while I was thinking:]\n"
+                    f"{combined}\n\n"
+                    f"[Now respond to all of these together:]"
+                )
+                rereply = _call_gemini(reprocess_prompt) + _footer()
+
+                if rereply and "All AI providers are unavailable" in rereply:
+                    # Providers went down during reprocessing — re-queue
+                    # the combined message so it survives the next restart.
+                    _save_to_unanswered_queue(combined)
+
+                cm.append_to_today(
+                    "twin", rereply,
+                    observation="reprocessed combined pending messages",
+                )
+                _send_fragmented_reply(rereply)
+
+                # KB update after reprocessing too — the combined reply
+                # may contain info that wasn't in the first reply.
+                try:
+                    _trigger_incremental_kb_update()
+                except Exception as e:
+                    log.error(f"Incremental KB update trigger failed: {e}")
+            except Exception as e:
+                log.error(
+                    f"Reprocessing pending messages failed: {e}\n"
+                    f"{traceback.format_exc()}"
+                )
+                # Re-queue the combined message so it isn't lost.
+                try:
+                    _save_to_unanswered_queue(combined)
+                except Exception:
+                    pass
+                # Reset processing state and stop the drain loop — we
+                # can't keep reprocessing if we just crashed. The next
+                # incoming message will start a fresh processing cycle.
+                with _processing_lock:
+                    _currently_processing = False
+                    _pending_messages = []
+                break
+
+    except Exception as e:
+        log.error(f"Message handling error: {e}\n{traceback.format_exc()}")
+        # Reset state on any unexpected error so the bot doesn't get
+        # stuck in "processing" mode forever (which would silently queue
+        # every subsequent message and never respond).
+        with _processing_lock:
+            _currently_processing = False
+            _pending_messages = []
 
 
 @bot.message_handler(content_types=["voice"])
@@ -1024,6 +1127,14 @@ def handle_voice(message):
             transcription = full
             reply = "(Couldn't separate transcription from response.)"
 
+        # FEATURE 1 — If every LLM provider failed, save the transcription
+        # to the unanswered queue so we reprocess it on next twin restart.
+        # Voice memos can't be replayed from the queue (we only save text),
+        # but the transcription is what the twin actually responded to, so
+        # saving the transcription preserves the user's intent.
+        if reply and "All AI providers are unavailable" in reply:
+            _save_to_unanswered_queue(f"[voice] {transcription}")
+
         cm.append_to_today("user", f"[voice] {transcription}")
         cm.append_to_today("twin", reply, observation="voice memo processed")
         _safe_reply(message, f"I heard: {transcription}\n\n{reply}" + _footer())
@@ -1057,6 +1168,16 @@ def handle_photo(message):
             "'what do you need from me on this?'"
         )
         reply = _call_gemini(prompt, image_bytes=img_bytes) + _footer()
+
+        # FEATURE 1 — If every LLM provider failed, save the caption to
+        # the unanswered queue. The image itself can't be replayed from
+        # the queue (we only save text), but the caption usually carries
+        # the user's intent well enough that reprocessing it later is
+        # still useful (and the twin can ask the user to resend the
+        # image if it actually needs it).
+        if reply and "All AI providers are unavailable" in reply:
+            _save_to_unanswered_queue(f"[photo] {caption}")
+
         cm.append_to_today("user", f"[photo] {caption}")
         cm.append_to_today("twin", reply, observation="screenshot analyzed")
         _safe_reply(message, reply)
@@ -1908,6 +2029,209 @@ def _safe_reply_to_user(text: str):
         log.error(f"Proactive message send failed: {e}")
 
 
+# ---------------------------------------------------------------------- #
+# FEATURE 1 — Unanswered message queue
+# ---------------------------------------------------------------------- #
+# When every LLM provider fails (rate limit, network, all keys dead), the
+# user's message would normally be lost. Instead we save it to a JSON
+# file at ~/ai-twin-memory/unanswered_queue.json and reprocess it the
+# next time the twin starts up. If reprocessing still fails (providers
+# still down), the message is re-queued so nothing is ever dropped.
+# The queue is capped at 20 entries (oldest dropped) to prevent it from
+# growing without bound.
+
+def _save_to_unanswered_queue(text: str):
+    """Save a message that the twin couldn't respond to (all providers failed).
+
+    The queue is a JSON list of {timestamp, text} objects, capped at the
+    last 20 entries. Oldest entries are dropped when the cap is exceeded.
+    Safe to call from any thread (file I/O only — no shared state).
+    """
+    try:
+        queue_path = Path.home() / "ai-twin-memory" / "unanswered_queue.json"
+        queue = []
+        if queue_path.exists():
+            try:
+                queue = json.loads(queue_path.read_text(encoding="utf-8"))
+                if not isinstance(queue, list):
+                    queue = []
+            except Exception:
+                queue = []
+        queue.append({
+            "timestamp": datetime.now().isoformat(),
+            "text": text,
+        })
+        # Keep only the last 20 unanswered messages
+        queue = queue[-20:]
+        try:
+            queue_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        queue_path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        log.info(f"Saved unanswered message to queue: {text[:50]}...")
+    except Exception as e:
+        log.error(f"Failed to save to unanswered queue: {e}")
+
+
+def _process_unanswered_queue():
+    """On startup, process any unanswered messages from the queue.
+
+    Loads ~/ai-twin-memory/unanswered_queue.json, clears the file FIRST
+    (so we don't reprocess the same messages if processing crashes the
+    twin), then processes each entry. If the LLM still can't respond
+    (all providers still unavailable), the message is re-saved to the
+    queue so it survives the next restart too.
+
+    Called from main() after _wait_for_freellmapi() and before polling
+    starts, so there is no concurrency with message handlers — no lock
+    needed here.
+    """
+    try:
+        queue_path = Path.home() / "ai-twin-memory" / "unanswered_queue.json"
+        if not queue_path.exists():
+            return
+        try:
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+        except Exception:
+            log.warning("Unanswered queue file is corrupt — ignoring it.")
+            try:
+                queue_path.unlink()
+            except Exception:
+                pass
+            return
+        if not isinstance(queue, list) or not queue:
+            return
+
+        log.info(f"Found {len(queue)} unanswered messages in queue. Processing...")
+
+        # Clear the queue file FIRST so we don't reprocess if processing
+        # crashes the twin. Messages that fail to reprocess get re-saved
+        # by _save_to_unanswered_queue() below.
+        try:
+            queue_path.write_text("[]", encoding="utf-8")
+        except Exception as e:
+            log.error(f"Could not clear unanswered queue file: {e}")
+
+        for item in queue:
+            if not isinstance(item, dict):
+                continue
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            log.info(f"Reprocessing unanswered message: {text[:50]}...")
+            # Short delay between reprocessing so we don't hammer the
+            # LLM provider that just came back online.
+            time.sleep(2)
+            try:
+                # Log it as a user message so the conversation record
+                # includes it (wasn't logged the first time around
+                # because we never got far enough to send a reply).
+                cm.append_to_today(
+                    "user", text,
+                    observation="reprocessed from unanswered queue",
+                )
+                prompt = _build_gemini_prompt(text)
+                reply = _call_gemini(prompt) + _footer()
+                if reply and "All AI providers are unavailable" not in reply:
+                    cm.append_to_today(
+                        "twin", reply,
+                        observation="reprocessed unanswered message",
+                    )
+                    _send_fragmented_reply(reply)
+                    log.info("Reprocessed unanswered message successfully.")
+                else:
+                    # Still can't respond — re-queue it for next restart.
+                    _save_to_unanswered_queue(text)
+                    log.warning("Still can't respond — re-queued message.")
+            except Exception as e:
+                log.error(f"Error reprocessing unanswered message: {e}")
+                _save_to_unanswered_queue(text)
+    except Exception as e:
+        log.error(f"Error processing unanswered queue: {e}")
+
+
+# ---------------------------------------------------------------------- #
+# FEATURE 3 — Multi-fragment replies
+# ---------------------------------------------------------------------- #
+# The AI can choose to send multiple messages in a row (like a friend
+# texting) by separating fragments with a line that contains only `---`.
+# Each fragment becomes its own Telegram message with a natural 1.5-3s
+# delay between them. This is opt-in: if the AI doesn't use `---`, the
+# reply is sent as a single message (chunked if very long). The voice
+# profile rule 19 tells the AI when this is appropriate vs. annoying.
+
+def _send_one_message_chunked(text: str, reply_to: int = None):
+    """Send a single logical message, chunking if it exceeds Telegram's limit.
+
+    Mirrors the chunking logic from _safe_reply but works without a
+    message object (used by _send_fragmented_reply, _process_unanswered_queue,
+    and any code path that doesn't have a Telegram message to reply to).
+    Splits on paragraph boundaries first, then newline, then hard char
+    count. Sends chunks sequentially with a short delay between them.
+    """
+    MAX = 4000
+    if len(text) <= MAX:
+        _send_telegram_message(ALLOWED_USER_ID, text, reply_to=reply_to)
+        return
+
+    parts = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= MAX:
+            parts.append(remaining)
+            break
+        cut = remaining.rfind("\n\n", 0, MAX)
+        if cut == -1 or cut < MAX // 2:
+            cut = remaining.rfind("\n", 0, MAX)
+        if cut == -1 or cut < MAX // 2:
+            cut = MAX
+        parts.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip()
+
+    log.info(
+        f"Chunking long fragment into {len(parts)} parts "
+        f"(total {sum(len(p) for p in parts)} chars)"
+    )
+    for i, part in enumerate(parts):
+        reply_target = reply_to if i == 0 else None
+        _send_telegram_message(ALLOWED_USER_ID, part, reply_to=reply_target)
+        if i < len(parts) - 1:
+            time.sleep(0.5)
+
+
+def _send_fragmented_reply(text: str):
+    """Send a reply, splitting on `---` separators into multiple messages.
+
+    If the text contains lines that are just `---`, each segment becomes
+    a separate Telegram message with a 1.5-3 second natural delay between
+    them — like a friend texting a follow-up. If no separators, sends as
+    one message (chunked if the single message is very long).
+
+    Each fragment is itself chunked if it exceeds Telegram's 4096-char
+    limit, so a long fragment won't be silently dropped.
+    """
+    if not text or not text.strip():
+        return
+
+    # Split on lines that are just --- (with optional surrounding whitespace)
+    fragments = re.split(r'\n\s*---\s*\n', text.strip())
+
+    # Filter out empty fragments
+    fragments = [f.strip() for f in fragments if f and f.strip()]
+
+    if not fragments:
+        return
+
+    # Multiple fragments — send each with a natural delay between them.
+    # Single fragment — send as one (chunked if very long).
+    for i, fragment in enumerate(fragments):
+        if i > 0:
+            # Natural delay between fragments (1.5-3 seconds)
+            delay = random.uniform(1.5, 3.0)
+            time.sleep(delay)
+        _send_one_message_chunked(fragment)
+
+
 def _website_monitoring_loop():
     """Background thread that checks monitored websites for changes.
 
@@ -2499,6 +2823,16 @@ def main() -> None:
     # twin's first calls hit "Connection refused" and fall through to
     # slower providers, which the user sees as log noise + lag.
     _wait_for_freellmapi(timeout_seconds=60)
+
+    # FEATURE 1 — Reprocess any messages the twin couldn't answer before
+    # the last restart (every LLM provider was down). This runs BEFORE
+    # polling starts so there is no concurrency with message handlers.
+    # Messages that still can't be answered (providers still down) get
+    # re-saved to the queue for the NEXT restart.
+    try:
+        _process_unanswered_queue()
+    except Exception as e:
+        log.error(f"Unanswered queue processing failed at startup: {e}")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

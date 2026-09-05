@@ -68,6 +68,18 @@ if [[ "$MODE" == "backup" ]]; then
     tmux kill-session -t freellmapi 2>/dev/null || true
     print_ok "Stopped"
 
+    # Make sure zip is installed (on a fresh phone it often isn't, and the old
+    # script hid zip's errors with >/dev/null 2>&1 so it failed silently).
+    if ! command -v zip &>/dev/null; then
+        print_step "Installing zip"
+        pkg install -y zip >/dev/null 2>&1 || true
+    fi
+    if ! command -v zip &>/dev/null; then
+        print_err "zip is not installed. Run: pkg install zip"
+        exit 1
+    fi
+    print_ok "zip is available"
+
     # 2. Create backup zip
     print_step "Creating backup"
     BACKUP_FILE="$HOME/ai-twin-phone-backup.zip"
@@ -115,12 +127,22 @@ if [[ "$MODE" == "backup" ]]; then
 }
 EOF
 
-    # Create zip
+    # Create zip — do NOT hide zip's own errors; if it fails we want to see why.
+    # Use `if ! zip ...` so `set -e` doesn't kill the script before we can print a message.
     cd "$TEMP_DIR"
-    zip -r "$BACKUP_FILE" . >/dev/null 2>&1
+    if ! zip -r "$BACKUP_FILE" . ; then
+        print_err "Failed to create zip file"
+        ls -la "$TEMP_DIR" 2>/dev/null
+        exit 1
+    fi
     cd ~
     rm -rf "$TEMP_DIR"
 
+    # Verify the zip actually exists and is non-empty before we try to upload it
+    if [[ ! -f "$BACKUP_FILE" ]] || [[ ! -s "$BACKUP_FILE" ]]; then
+        print_err "Backup zip is missing or empty"
+        exit 1
+    fi
     BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
     print_ok "Backup created: $BACKUP_FILE ($BACKUP_SIZE)"
 
@@ -135,13 +157,14 @@ EOF
         "https://api.github.com/repos/$REPO/releases" \
         -d "{\"tag_name\":\"$RELEASE_TAG\",\"name\":\"Phone Backup $(date)\",\"body\":\"Automated phone backup\",\"draft\":false,\"prerelease\":true}")
 
-    RELEASE_ID=$(echo "$RELEASE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
-    UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('upload_url','').replace('{?name,label}',''))" 2>/dev/null)
+    RELEASE_ID=$(echo "$RELEASE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+    UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('upload_url','').replace('{?name,label}',''))" 2>/dev/null || true)
 
     if [[ -z "$RELEASE_ID" ]] || [[ -z "$UPLOAD_URL" ]]; then
         print_err "Failed to create GitHub release"
-        print_warn "Backup is at: $BACKUP_FILE"
-        print_warn "You can transfer it manually (Bluetooth, USB, cloud)"
+        print_warn "Response was: $RELEASE_RESPONSE"
+        print_warn "Backup is saved locally at: $BACKUP_FILE"
+        print_warn "You can transfer it manually (Bluetooth, USB, cloud) or re-run this script"
         exit 1
     fi
 
@@ -154,16 +177,21 @@ EOF
         --data-binary @"$BACKUP_FILE" \
         "${UPLOAD_URL}?name=ai-twin-phone-backup.zip")
 
-    ASSET_URL=$(echo "$UPLOAD_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('browser_download_url',''))" 2>/dev/null)
+    ASSET_URL=$(echo "$UPLOAD_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('browser_download_url',''))" 2>/dev/null || true)
+    HTTP_STATUS=$(echo "$UPLOAD_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state','unknown'))" 2>/dev/null || true)
 
-    if [[ -n "$ASSET_URL" ]]; then
-        print_ok "Backup uploaded to GitHub"
-        echo ""
-        echo "Download URL (for phone 2):"
-        echo "  $ASSET_URL"
+    if [[ "$HTTP_STATUS" == "uploaded" ]]; then
+        print_ok "Backup uploaded to GitHub (state: $HTTP_STATUS)"
+        if [[ -n "$ASSET_URL" ]]; then
+            echo ""
+            echo "Download URL (for phone 2):"
+            echo "  $ASSET_URL"
+        fi
     else
-        print_err "Failed to upload backup"
-        print_warn "Backup is at: $BACKUP_FILE"
+        print_err "Upload may have failed. Status: $HTTP_STATUS"
+        print_warn "Backup is saved locally at: $BACKUP_FILE"
+        print_warn "You can transfer it manually (Bluetooth, USB, cloud) or re-run this script"
+        exit 1
     fi
 
     echo ""

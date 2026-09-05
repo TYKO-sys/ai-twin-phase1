@@ -72,6 +72,13 @@ fi
 # Get out of any deleted folder
 cd ~
 
+# Save .env to permanent storage BEFORE wiping ~/ai-twin
+if [[ -f ~/ai-twin/.env ]]; then
+    mkdir -p ~/ai-twin-memory
+    cp ~/ai-twin/.env ~/ai-twin-memory/env_backup.txt
+    print_ok "Saved .env to permanent storage before wipe"
+fi
+
 # Remove old ai-twin folder (clean slate)
 rm -rf ~/ai-twin 2>/dev/null
 
@@ -91,10 +98,13 @@ print_step "Step 3: Restore .env from backup"
 if [[ -f "$HOME/.env.backup" ]]; then
     cp "$HOME/.env.backup" ~/ai-twin/.env
     print_ok ".env restored from backup ($(wc -c < ~/ai-twin/.env) bytes)"
+elif [[ -f "$HOME/ai-twin-memory/env_backup.txt" ]]; then
+    cp "$HOME/ai-twin-memory/env_backup.txt" ~/ai-twin/.env
+    print_ok ".env restored from permanent storage ($(wc -c < ~/ai-twin/.env) bytes)"
 elif [[ -f ~/ai-twin/.env ]]; then
     print_ok ".env already present"
 else
-    print_warn "No .env backup found. You'll need to set API keys via the wizard."
+    print_warn "No .env backup found anywhere. You'll need to set API keys via the wizard."
 fi
 
 cd ~/ai-twin
@@ -444,8 +454,11 @@ fi
 # ------------------------------------------------------------
 print_step "Step 14: Update .env backup"
 if [[ -f ~/ai-twin/.env ]]; then
+    # Update the home backup
     cp ~/ai-twin/.env "$HOME/.env.backup"
-    print_ok ".env backup updated (now includes FreeLLMAPI key if set)"
+    # Update the permanent storage in memory dir (survives future wipes)
+    cp ~/ai-twin/.env "$HOME/ai-twin-memory/env_backup.txt"
+    print_ok ".env backup updated (home + permanent storage)"
 fi
 
 # ------------------------------------------------------------

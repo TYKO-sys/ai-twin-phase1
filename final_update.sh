@@ -15,6 +15,7 @@
 #   7. Installs lxml (for the scrape_website tool)
 #   8. Sets up Termux:Boot auto-start for the twin
 #  8.5. Sets up .bashrc hook so FreeLLMAPI auto-starts on every Termux open
+#  8.6. Sets up .bashrc hook so the AI Twin auto-starts on every Termux open
 #   9. Sets up Termux:Boot auto-start for FreeLLMAPI (if installed)
 #  10. Acquires wakelock so Android doesn't kill anything
 #  11. Starts FreeLLMAPI (if installed) with auto-restart wrapper
@@ -272,6 +273,40 @@ if [[ -f "$HOME/.profile" ]]; then
         sed -i 's/ensure_free_llmapi.sh/ensure_freellmapi.sh/g' "$HOME/.profile"
         print_ok "Fixed wrong filename in ~/.profile"
     fi
+fi
+
+# ------------------------------------------------------------
+# 8.6. Termux startup hook for the AI Twin (runs on every Termux open)
+# ------------------------------------------------------------
+# Same pattern as 8.5 — but for the twin. The twin only auto-started on
+# phone boot (Termux:Boot) before, so when Android killed Termux and the
+# user reopened it, the twin didn't come back. This hook fixes that.
+print_step "Step 8.6: Termux startup hook for the AI Twin"
+
+# Copy the ensure_twin script to ~/bin/
+cp ~/ai-twin/ensure_twin.sh ~/bin/ensure_twin.sh 2>/dev/null || true
+chmod +x ~/bin/ensure_twin.sh 2>/dev/null || true
+
+# Add to .bashrc if not already there
+TWIN_HOOK_LINE='[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &'
+
+if [[ ! -f "$BASHRC" ]] || ! grep -q "ensure_twin.sh" "$BASHRC" 2>/dev/null; then
+    echo "" >> "$BASHRC"
+    echo "# Auto-start twin on Termux open" >> "$BASHRC"
+    echo "$TWIN_HOOK_LINE" >> "$BASHRC"
+    print_ok "Added twin auto-start to ~/.bashrc"
+else
+    print_ok "Twin auto-start already in ~/.bashrc"
+fi
+
+# Also add to .profile (some Termux setups use this)
+if [[ ! -f "$PROFILE" ]] || ! grep -q "ensure_twin.sh" "$PROFILE" 2>/dev/null; then
+    echo "" >> "$PROFILE"
+    echo "# Auto-start twin on Termux open" >> "$PROFILE"
+    echo "$TWIN_HOOK_LINE" >> "$PROFILE" 2>/dev/null || true
+    print_ok "Added twin auto-start to ~/.profile"
+else
+    print_ok "Twin auto-start already in ~/.profile"
 fi
 
 # ------------------------------------------------------------

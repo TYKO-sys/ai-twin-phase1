@@ -3152,6 +3152,18 @@ def _init_phone_lock() -> bool:
         log.info("No GITHUB_TOKEN in .env — phone lock disabled")
         return False
 
+    # Check if gist creation previously failed (don't keep retrying every startup)
+    # A 403/401/422 here means the token lacks gist scope or is invalid — that
+    # won't fix itself on reboot, so we mark it permanently and stop the log spam.
+    gist_failed_path = Path.home() / "ai-twin-memory" / "gist_failed.txt"
+    if gist_failed_path.exists():
+        log.info(
+            "Phone lock disabled (gist creation previously failed — "
+            "token may lack gist scope). "
+            "Delete ~/ai-twin-memory/gist_failed.txt to retry."
+        )
+        return False
+
     # Get or create gist
     gist_id_path = Path.home() / "ai-twin-memory" / "gist_id.txt"
     if gist_id_path.exists():
@@ -3181,10 +3193,25 @@ def _init_phone_lock() -> bool:
                 gist_id_path.write_text(_gist_id, encoding="utf-8")
                 log.info(f"Created phone lock gist: {_gist_id}")
             else:
-                log.warning(f"Failed to create gist: {resp.status_code} {resp.text[:200]}")
+                log.warning(
+                    f"Failed to create gist: {resp.status_code} — "
+                    f"phone lock disabled (token may lack gist scope). "
+                    f"This won't be retried on next startup."
+                )
+                # Mark as permanently failed so we don't retry every startup
+                # and spam the log with 403s. User can delete the marker file
+                # to retry (e.g. after regenerating the token with gist scope).
+                try:
+                    gist_failed_path.parent.mkdir(parents=True, exist_ok=True)
+                    gist_failed_path.write_text(
+                        str(resp.status_code), encoding="utf-8"
+                    )
+                except Exception as write_err:
+                    log.warning(f"Could not write gist_failed marker: {write_err}")
                 return False
         except Exception as e:
-            log.warning(f"Failed to create gist: {e}")
+            # Transient network error — don't permanently fail, just skip this boot.
+            log.warning(f"Failed to create gist (transient): {e}")
             return False
 
     return True
@@ -3429,7 +3456,7 @@ def main() -> None:
     while True:
         try:
             bot.infinity_polling(
-                skip_pending=True,
+                skip_pending=False,
                 timeout=60,
                 long_polling_timeout=30,
                 # Don't let telebot's internal error handler swallow crashes

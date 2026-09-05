@@ -215,6 +215,21 @@ _currently_processing = False
 # follow-up instead of "I see your message, hold on" + separate replies.
 _pending_messages: list = []
 
+# FIX 4 (reprocess + interruptible fragment send) — signal flag.
+# When a new message arrives WHILE we're still sending a multi-fragment
+# reply, handle_text sets this to True (under _processing_lock) so the
+# fragment-sender loop stops BEFORE sending the next fragment. The unsent
+# fragments + the newly-queued messages are then handed back to the LLM
+# for a single synthesized follow-up.
+#
+# Thread-safety: this is a single bool read/written under the same
+# _processing_lock used for the queue (acquired briefly in handle_text
+# and checked inside _send_fragmented_reply at safe points). The benign
+# race window (a fragment being sent in the moment the flag is raised)
+# is acceptable — at worst, one extra fragment goes out before the loop
+# notices and stops.
+_fragment_send_interrupted: bool = False
+
 # ----------------------------------------------------------------------
 # Cross-message "i'm here" tracker (FIX 4)
 # ----------------------------------------------------------------------
@@ -807,6 +822,57 @@ def cmd_checkboot(message):
     _safe_reply(message, "\n".join(diagnostics))
 
 
+@bot.message_handler(commands=["update"])
+def cmd_update(message):
+    """FIX 3 (Part B) — Pull the latest code from GitHub and restart the twin.
+
+    Triggered by the `/update` slash command OR by natural language in
+    `handle_text` ("update", "update yourself", "pull the latest", etc.).
+
+    Pulls via `git pull --ff-only` (so it never creates merge commits —
+    fails cleanly if there's a divergence). Then `os.execv` replaces this
+    Python process in-place with a fresh one running the same script. The
+    auto-restart wrapper (if installed via install.sh) and the phone-lock
+    heartbeat both handle the brief gap cleanly — the new process re-
+    initializes everything and re-claims the phone lock within a few
+    seconds.
+
+    The user is told "updating. back in 30 seconds." before the pull
+    starts so they know not to expect immediate replies.
+    """
+    if not _auth_user(message):
+        return
+
+    _send_telegram_message(ALLOWED_USER_ID, "updating. back in 30 seconds.")
+
+    try:
+        import subprocess
+        # Pull latest code (fast-forward only — never creates merge commits)
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(Path(__file__).parent)
+        )
+        log.info(
+            f"Update pull: rc={result.returncode} "
+            f"stdout={result.stdout[:200]!r} stderr={result.stderr[:200]!r}"
+        )
+
+        # Restart in-place. os.execv replaces the current process image
+        # with a fresh Python interpreter running the same script. The
+        # auto-restart wrapper (if any) sees this as a clean exit and does
+        # not need to restart us. If there's no wrapper, execv still works
+        # — the new process inherits stdin/stdout/stderr.
+        import os
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        log.error(f"Update failed: {e}\n{traceback.format_exc()}")
+        try:
+            _send_telegram_message(ALLOWED_USER_ID, f"update failed: {e}")
+        except Exception:
+            pass
+
+
 @bot.message_handler(commands=["fix"])
 def cmd_fix(message):
     """One-tap recovery. Restarts the bot's connection and clears errors.
@@ -955,6 +1021,20 @@ def handle_text(message):
             pass
         return
 
+    # FIX 3 (Part C) — Detect "update" in natural messages. The user
+    # doesn't need to remember the slash command; saying "update yourself"
+    # or "pull the latest" in a normal message triggers cmd_update too.
+    # We check this BEFORE logging the message as a regular user turn so
+    # the update request doesn't pollute today's conversation log.
+    update_triggers = [
+        "update the twin", "update yourself", "pull the latest",
+        "run an update", "/update",
+    ]
+    text_lower = text.lower().strip()
+    if any(trigger in text_lower for trigger in update_triggers) or text_lower == "update":
+        cmd_update(message)
+        return
+
     # Regular message — log it
     cm.append_to_today("user", text)
 
@@ -967,46 +1047,255 @@ def handle_text(message):
     # them about, cancel that reminder — they already know.
     _cancel_redundant_reminders(text)
 
-    # FEATURE 2 — Silent queueing when already processing.
-    # The OLD behavior was to send "I see your message, give me a moment"
-    # for every message that arrived while we were busy — annoying, and
-    # the user got a separate reply for each one. The NEW behavior: queue
-    # silently, and after the in-flight response finishes, re-prompt the
-    # LLM with ALL queued messages combined into one follow-up.
+    # FIX 1 + FIX 4 — Silent queueing, synthesis-without-sending, and
+    # interruptible fragment send.
+    #
+    # OLD behavior (pre-this-fix):
+    #   1. Process message 1 → SEND response 1
+    #   2. If new messages arrived during processing, send a SEPARATE
+    #      "earlier messages you sent while I was thinking..." response 2
+    #   → user sees TWO messages per turn, with the second one awkwardly
+    #     framed as "earlier you sent..."
+    #
+    # NEW behavior (this fix):
+    #   1. Process message 1 → get response 1 (DON'T send)
+    #   2. If new messages arrived during processing, synthesize:
+    #      "I was about to send this: [response 1]. But the user sent:
+    #       [messages 2, 3, ...]. Synthesize a new response that accounts
+    #       for both." → get response 2 (DON'T send). Loop until no new
+    #       pending.
+    #   3. Once the queue is empty, send the final synthesized response.
+    #   4. If NEW messages arrive DURING the multi-fragment send (mid-
+    #      fragment), abort the remaining fragments, treat already-sent
+    #      fragments as "what the user saw" and unsent fragments as "what
+    #      I was about to say", synthesize a new response with both + the
+    #      new messages, and send THAT. Loop until a clean send completes.
+    #   → user sees ONE message per logical turn (the synthesized one).
     #
     # Atomic check-and-set under the lock — no race between two handler
     # threads both seeing _currently_processing == False and both
-    # proceeding. The lock is only held for this critical section; the
-    # LLM call and Telegram sends happen WITHOUT the lock held, so there
-    # is no deadlock risk (single lock, no nested acquisition, no I/O
-    # under the lock).
-    global _currently_processing
+    # proceeding. The lock is only held for these short critical sections;
+    # the LLM call and Telegram sends happen WITHOUT the lock held, so
+    # there is no deadlock risk (single lock, no nested acquisition, no
+    # I/O under the lock).
+    global _currently_processing, _pending_messages, _fragment_send_interrupted
     with _processing_lock:
         if _currently_processing:
             _pending_messages.append(text)
+            # FIX 4 — signal the in-flight fragment sender (if any) to
+            # stop AFTER the current fragment so we can synthesize a
+            # single follow-up instead of letting the rest go out.
+            _fragment_send_interrupted = True
             log.info(
-                f"Message queued while processing: {text[:50]}... "
+                f"Message queued + fragment send interrupted: {text[:50]}... "
                 f"(queue: {len(_pending_messages)})"
             )
-            return  # Don't respond — we'll handle it after current processing finishes
+            return  # Silent — handled after current processing finishes
         _currently_processing = True
+        _fragment_send_interrupted = False
+
+    sent_so_far: list = []  # Fragments sent across interrupt cycles (for synthesis prompt)
 
     try:
         _send_typing(message.chat.id)
         prompt = _build_gemini_prompt(text)
-        reply = _call_gemini(prompt) + _footer()
+        current_response = _call_gemini(prompt) + _footer()
 
-        # FEATURE 1 — If every LLM provider failed, save the user's
-        # message to the unanswered queue so we can reprocess it on the
-        # next twin restart (when providers are back). The error reply
-        # is still sent to the user so they see what happened.
-        if reply and "All AI providers are unavailable" in reply:
+        # FEATURE 1 — If every LLM provider failed, save the user's message
+        # to the unanswered queue so we can reprocess it on the next twin
+        # restart (when providers are back). The error reply is still sent
+        # to the user so they see what happened.
+        if current_response and "All AI providers are unavailable" in current_response:
             _save_to_unanswered_queue(text)
 
-        cm.append_to_today("twin", reply)
-        # FEATURE 3 — Send the reply, splitting on `---` into multiple
-        # Telegram messages if the AI chose to use them.
-        _send_fragmented_reply(reply)
+        # DRAIN LOOP 1 (FIX 1) — synthesize with messages that arrived
+        # DURING the LLM call. Don't send anything yet — keep synthesizing
+        # until the queue is empty. If new messages arrive during the
+        # synthesis itself, the next iteration picks them up too (this
+        # matches the spec: "If 3 new messages arrive during the synthesis,
+        # the twin again doesn't send, takes all 3 + the synthesized-but-
+        # unsent response, and synthesizes again.").
+        while True:
+            with _processing_lock:
+                if not _pending_messages:
+                    break  # No new messages — safe to proceed to send
+                pending = _pending_messages[:]
+                _pending_messages = []
+                # Stay in processing mode — _currently_processing stays True
+
+            log.info(
+                f"Synthesizing (pre-send) with {len(pending)} new message(s)..."
+            )
+            combined_pending = "\n\n".join(pending)
+            synthesis_prompt = (
+                "You were about to send this response to the user "
+                "(it may have been multiple messages separated by ---):\n\n"
+                f"{current_response}\n\n"
+                "But the user sent these new messages while you were processing:\n\n"
+                f"{combined_pending}\n\n"
+                "Synthesize a new response that accounts for BOTH the original "
+                "context AND the new messages. Don't repeat what you already "
+                "drafted. Address the new messages naturally. You can still use "
+                "--- to split into multiple messages if it feels natural. "
+                "Send only the final synthesized response.\n\n"
+                "The synthesized response:"
+            )
+
+            try:
+                _send_typing(message.chat.id)
+                new_response = _call_gemini(
+                    _build_gemini_prompt(synthesis_prompt)
+                ) + _footer()
+                if new_response and "All AI providers are unavailable" in new_response:
+                    # Providers went down during synthesis — keep the
+                    # previous response, save pending so they survive the
+                    # next restart, and stop synthesizing.
+                    log.warning(
+                        "Synthesis hit unavailable providers — keeping "
+                        "previous response, saving pending to queue"
+                    )
+                    _save_to_unanswered_queue(combined_pending)
+                    break
+                current_response = new_response
+            except Exception as e:
+                log.error(
+                    f"Pre-send synthesis failed: {e}\n{traceback.format_exc()}"
+                )
+                _save_to_unanswered_queue(combined_pending)
+                break
+
+        # SEND LOOP (FIX 4) — send current_response. If interrupted by a
+        # new message arriving mid-fragment, synthesize with what was
+        # already sent + what was unsent + the new pending, and send
+        # again. Loop until a clean (uninterrupted) send completes.
+        #
+        # Soft cap at 10 iterations: in normal use the loop exits after 1
+        # (no interrupt) or 2 (one interrupt) cycles. If something goes
+        # wrong (LLM keeps producing multi-fragment responses that get
+        # interrupted by a flood of user messages) we bail out and send
+        # whatever's left so the bot doesn't get stuck in an infinite loop.
+        _send_loop_max = 10
+        _send_loop_iter = 0
+        while True:
+            _send_loop_iter += 1
+            if _send_loop_iter > _send_loop_max:
+                log.warning(
+                    f"Send loop hit cap ({_send_loop_max}) — sending any "
+                    f"unsent fragments as-is and breaking to avoid infinite loop"
+                )
+                if unsent_fragments:
+                    current_response = "\n---\n".join(unsent_fragments)
+                    result = _send_fragmented_reply(current_response)
+                    if result.get("sent"):
+                        cm.append_to_today("twin", "\n---\n".join(result["sent"]))
+                        sent_so_far.extend(result["sent"])
+                break
+
+            if current_response and current_response.strip():
+                result = _send_fragmented_reply(current_response)
+                sent_fragments = result.get("sent", [])
+                unsent_fragments = result.get("unsent", [])
+            else:
+                sent_fragments = []
+                unsent_fragments = []
+
+            # Log what was just sent so today's conversation history
+            # matches what the user actually saw (multiple fragments
+            # joined by --- as one twin turn).
+            if sent_fragments:
+                cm.append_to_today("twin", "\n---\n".join(sent_fragments))
+                sent_so_far.extend(sent_fragments)
+
+            # Take any new pending that arrived during the send (the
+            # interrupt flag would have been set by the queueing handler
+            # in that case, so unsent_fragments would also be non-empty).
+            with _processing_lock:
+                pending_now = _pending_messages[:]
+                _pending_messages = []
+
+            # If not interrupted AND no new pending arrived during the
+            # send, the turn is complete.
+            if not unsent_fragments and not pending_now:
+                break  # Clean send — done
+
+            # Either interrupted (unsent_fragments non-empty) OR a new
+            # message arrived during the single-fragment send (pending_now
+            # non-empty). Either way: synthesize with what we already
+            # sent + what we were about to send + the new pending.
+            if not pending_now and unsent_fragments:
+                # Edge case: interrupt flag was raised but no message
+                # queued (e.g. race with previous drain). Send the unsent
+                # fragments as-is and re-enter the send loop — synthesizing
+                # with no new pending would just produce noise.
+                log.info(
+                    "Interrupt flag set but no pending after send — "
+                    "sending unsent fragments as-is"
+                )
+                current_response = "\n---\n".join(unsent_fragments)
+                continue
+
+            # Build the synthesis prompt with sent/unsent/new context.
+            sent_text_for_prompt = (
+                "\n---\n".join(sent_so_far) if sent_so_far
+                else "(nothing sent yet)"
+            )
+            if unsent_fragments:
+                unsent_text_for_prompt = "\n---\n".join(unsent_fragments)
+            elif current_response and not sent_so_far:
+                # Single-fragment send that completed but new pending
+                # arrived during it — the single fragment IS "what was
+                # about to be sent" (the user already saw it though, so
+                # it's actually "what was sent"). sent_so_far covers it.
+                unsent_text_for_prompt = "(nothing)"
+            else:
+                unsent_text_for_prompt = "(nothing)"
+
+            combined_pending = "\n\n".join(pending_now)
+            log.info(
+                f"Synthesizing (post-interrupt) with {len(pending_now)} "
+                f"new message(s)... "
+                f"(sent_so_far={len(sent_so_far)}, unsent={len(unsent_fragments)})"
+            )
+            synthesis_prompt = (
+                "You were in the middle of sending a response to the user. "
+                "Here's what happened:\n\n"
+                "What you ALREADY SENT to the user:\n"
+                f"{sent_text_for_prompt}\n\n"
+                "What you were ABOUT TO SEND but didn't:\n"
+                f"{unsent_text_for_prompt}\n\n"
+                "Then the user sent these new messages:\n"
+                f"{combined_pending}\n\n"
+                "Synthesize a new response. Don't repeat what you already "
+                "sent. Account for what you were about to say AND the new "
+                "messages. You can still use --- to split into multiple "
+                "messages if natural. Send only the final synthesized "
+                "response.\n\n"
+                "The synthesized response:"
+            )
+
+            try:
+                _send_typing(message.chat.id)
+                new_response = _call_gemini(
+                    _build_gemini_prompt(synthesis_prompt)
+                ) + _footer()
+                if new_response and "All AI providers are unavailable" in new_response:
+                    log.warning(
+                        "Post-interrupt synthesis hit unavailable providers "
+                        "— sending unsent fragments as-is"
+                    )
+                    current_response = (
+                        "\n---\n".join(unsent_fragments) if unsent_fragments else ""
+                    )
+                else:
+                    current_response = new_response
+            except Exception as e:
+                log.error(
+                    f"Post-interrupt synthesis failed: {e}\n{traceback.format_exc()}"
+                )
+                current_response = (
+                    "\n---\n".join(unsent_fragments) if unsent_fragments else ""
+                )
+            # Loop back — re-send current_response (possibly interrupted again).
 
         # Auto-update knowledge base after conversations (not just evening)
         # This runs in a background thread so it doesn't delay the response
@@ -1016,82 +1305,16 @@ def handle_text(message):
         except Exception as e:
             log.error(f"Incremental KB update trigger failed: {e}")
 
-        # FEATURE 2 — Drain the pending queue. After the in-flight
-        # response is sent, check if any messages arrived while we were
-        # busy. If yes, combine them into one and re-prompt the LLM with
-        # explicit framing ("earlier messages you sent while I was
-        # thinking"), so the AI writes ONE cohesive reply that addresses
-        # all of them — not separate replies for each.
-        #
-        # Loop continues until the queue is empty, so messages that
-        # arrive WHILE we're reprocessing are picked up too.
-        while True:
-            with _processing_lock:
-                if not _pending_messages:
-                    _currently_processing = False
-                    break
-                # Combine all pending messages into one
-                combined = "\n".join(_pending_messages)
-                _pending_messages = []
-                # Stay in processing mode — _currently_processing stays True
-                pending_count = combined.count("\n") + 1
-
-            log.info(
-                f"Reprocessing {pending_count} pending message(s) combined "
-                f"(~{len(combined)} chars)..."
-            )
-            try:
-                _send_typing(message.chat.id)
-                reprocess_prompt = _build_gemini_prompt(
-                    f"[Earlier messages you sent while I was thinking:]\n"
-                    f"{combined}\n\n"
-                    f"[Now respond to all of these together:]"
-                )
-                rereply = _call_gemini(reprocess_prompt) + _footer()
-
-                if rereply and "All AI providers are unavailable" in rereply:
-                    # Providers went down during reprocessing — re-queue
-                    # the combined message so it survives the next restart.
-                    _save_to_unanswered_queue(combined)
-
-                cm.append_to_today(
-                    "twin", rereply,
-                    observation="reprocessed combined pending messages",
-                )
-                _send_fragmented_reply(rereply)
-
-                # KB update after reprocessing too — the combined reply
-                # may contain info that wasn't in the first reply.
-                try:
-                    _trigger_incremental_kb_update()
-                except Exception as e:
-                    log.error(f"Incremental KB update trigger failed: {e}")
-            except Exception as e:
-                log.error(
-                    f"Reprocessing pending messages failed: {e}\n"
-                    f"{traceback.format_exc()}"
-                )
-                # Re-queue the combined message so it isn't lost.
-                try:
-                    _save_to_unanswered_queue(combined)
-                except Exception:
-                    pass
-                # Reset processing state and stop the drain loop — we
-                # can't keep reprocessing if we just crashed. The next
-                # incoming message will start a fresh processing cycle.
-                with _processing_lock:
-                    _currently_processing = False
-                    _pending_messages = []
-                break
-
     except Exception as e:
         log.error(f"Message handling error: {e}\n{traceback.format_exc()}")
         # Reset state on any unexpected error so the bot doesn't get
         # stuck in "processing" mode forever (which would silently queue
         # every subsequent message and never respond).
+    finally:
         with _processing_lock:
             _currently_processing = False
             _pending_messages = []
+        _fragment_send_interrupted = False
 
 
 @bot.message_handler(content_types=["voice"])
@@ -2202,16 +2425,31 @@ def _send_one_message_chunked(text: str, reply_to: int = None):
 def _send_fragmented_reply(text: str):
     """Send a reply, splitting on `---` separators into multiple messages.
 
-    If the text contains lines that are just `---`, each segment becomes
-    a separate Telegram message with a 1.5-3 second natural delay between
-    them — like a friend texting a follow-up. If no separators, sends as
-    one message (chunked if the single message is very long).
+    FIX 2 — Timing between fragments is now based on fragment length
+    (longer fragments = longer pause) with a hard cap at 4 seconds so the
+    user doesn't wait too long. Previously this was a flat 1.5-3 second
+    random delay.
 
-    Each fragment is itself chunked if it exceeds Telegram's 4096-char
-    limit, so a long fragment won't be silently dropped.
+    FIX 4 — Interruptible. The global `_fragment_send_interrupted` flag is
+    checked at safe points (top of each iteration + right after the
+    pre-send delay). If a new user message arrived while we were mid-send,
+    `handle_text` sets the flag (under `_processing_lock`) and we stop
+    sending, returning the list of fragments already sent and the list of
+    fragments NOT yet sent. The caller then synthesizes a single follow-up
+    that accounts for what the user already saw + what we were about to
+    say + the new messages.
+
+    Returns a dict: {"sent": [...], "unsent": [...]}.
+    - On success (all fragments sent, or only one fragment), "unsent" is
+      an empty list.
+    - On interruption, "unsent" contains the remaining fragments.
+    - On empty/whitespace input, both lists are empty.
     """
+    global _fragment_send_interrupted
+    _fragment_send_interrupted = False  # Reset at start of each send
+
     if not text or not text.strip():
-        return
+        return {"sent": [], "unsent": []}
 
     # Split on lines that are just --- (with optional surrounding whitespace)
     fragments = re.split(r'\n\s*---\s*\n', text.strip())
@@ -2220,16 +2458,54 @@ def _send_fragmented_reply(text: str):
     fragments = [f.strip() for f in fragments if f and f.strip()]
 
     if not fragments:
-        return
+        return {"sent": [], "unsent": []}
 
-    # Multiple fragments — send each with a natural delay between them.
-    # Single fragment — send as one (chunked if very long).
+    # Single fragment — send as one (chunked if very long). Not interruptible
+    # at the fragment level (it's one logical message), but if a new message
+    # arrived during the chunked send, the caller's drain loop will pick up
+    # the pending queue and synthesize a follow-up.
+    if len(fragments) == 1:
+        _send_one_message_chunked(fragments[0])
+        return {"sent": fragments, "unsent": []}
+
+    # Multiple fragments — send each with a length-based natural delay.
+    # Check the interrupt flag at safe points: top of each iteration and
+    # right after the pre-send delay (so a flag raised during the delay
+    # is honored before the fragment goes out).
+    sent_fragments: list = []
     for i, fragment in enumerate(fragments):
+        # Check if interrupted by a new message (raised between fragments)
+        if _fragment_send_interrupted:
+            log.info(
+                f"Fragment send interrupted at fragment {i+1}/{len(fragments)} "
+                f"(sent {len(sent_fragments)}, unsent {len(fragments) - i})"
+            )
+            return {"sent": sent_fragments, "unsent": fragments[i:]}
+
         if i > 0:
-            # Natural delay between fragments (1.5-3 seconds)
-            delay = random.uniform(1.5, 3.0)
+            # FIX 2 — Timing based on length:
+            #   ~1 second per 50 chars of the upcoming fragment, capped at 3
+            #   seconds, plus a 0.5-1.5 second random component for natural
+            #   variation. Total is hard-capped at 4 seconds so the user
+            #   doesn't wait too long between messages.
+            length_based = min(len(fragment) / 50, 3.0)  # 0-3s based on length
+            random_component = random.uniform(0.5, 1.5)  # 0.5-1.5s variation
+            delay = min(length_based + random_component, 4.0)  # Hard cap 4s
             time.sleep(delay)
+
+        # Check again after the delay — a new message may have arrived
+        # during the sleep. If so, don't send this fragment.
+        if _fragment_send_interrupted:
+            log.info(
+                f"Fragment send interrupted during delay at fragment {i+1}/{len(fragments)} "
+                f"(sent {len(sent_fragments)}, unsent {len(fragments) - i})"
+            )
+            return {"sent": sent_fragments, "unsent": fragments[i:]}
+
         _send_one_message_chunked(fragment)
+        sent_fragments.append(fragment)
+
+    return {"sent": sent_fragments, "unsent": []}
 
 
 def _website_monitoring_loop():
@@ -3025,6 +3301,44 @@ def main() -> None:
         _process_unanswered_queue()
     except Exception as e:
         log.error(f"Unanswered queue processing failed at startup: {e}")
+
+    # FIX 3 (Part A) — Auto-update: pull the latest code from GitHub on
+    # startup. If the remote has new commits, pull them down and notify
+    # the user (they can apply the update by saying "/update" or just
+    # "update yourself", which restarts the twin to load the new code).
+    # We DON'T restart automatically here because the user might be in
+    # the middle of a conversation — better to let them trigger the
+    # restart at a convenient moment. If the pull fails (network, dirty
+    # tree), we just log a warning and continue — never block startup.
+    try:
+        log.info("Checking for code updates on GitHub...")
+        import subprocess
+        result = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(Path(__file__).parent)
+        )
+        # rc=0 + stdout not containing "Already up to date" → new code
+        # pulled down. Anything else (rc!=0, or already up to date) is
+        # a no-op for our purposes.
+        if (result.returncode == 0
+                and result.stdout
+                and "Already up to date" not in result.stdout):
+            log.info(f"Code updated on startup: {result.stdout[:200]!r}")
+            try:
+                _send_telegram_message(
+                    ALLOWED_USER_ID,
+                    "code updated on github. say /update to apply."
+                )
+            except Exception:
+                pass
+        else:
+            log.info(
+                f"Code already up to date (rc={result.returncode}, "
+                f"stdout={result.stdout[:120]!r})"
+            )
+    except Exception as e:
+        log.warning(f"Auto-update check failed at startup: {e}")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

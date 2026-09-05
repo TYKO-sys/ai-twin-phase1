@@ -1815,6 +1815,10 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
     opportunities = []
 
     try:
+        # WEEKEND CHECK: Don't suggest calling offices on Saturday/Sunday.
+        # Used later to filter out office-related opportunities on weekends.
+        is_weekend = now.weekday() >= 5  # 5=Saturday, 6=Sunday
+
         # Load tasks once — used by multiple checks
         try:
             from tools import _load_tasks, tool_task_review
@@ -1932,6 +1936,43 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
         # Score and pick the best opportunity
         if not opportunities:
             return None
+
+        # WEEKEND CHECK: Filter out opportunities that require calling an
+        # office on Saturday/Sunday. Offices (doctor, government, MTA, court,
+        # etc.) are closed on weekends. Online/MyChart/app tasks still work
+        # 24/7, so those are allowed through.
+        if is_weekend:
+            office_keywords = [
+                "call", "office", "dr lu", "dr. lu", "surgeon",
+                "mta", "mobilitylink", "fax", "roi",
+                "johns hopkins", "probation",
+            ]
+            weekend_filtered = []
+            for opp in opportunities:
+                context_lower = opp.get("context", "").lower()
+                reason = opp.get("reason", "")
+                # If this opportunity is about calling an office, skip it
+                # on weekends — unless it's specifically something that
+                # CAN be done online (MyChart, app, website).
+                if any(kw in context_lower for kw in office_keywords):
+                    if ("mychart" in context_lower
+                            or "online" in context_lower
+                            or "app" in context_lower):
+                        weekend_filtered.append(opp)
+                    else:
+                        log.info(
+                            f"Skipping weekend office task: {reason} — "
+                            "offices closed on weekends"
+                        )
+                else:
+                    weekend_filtered.append(opp)
+            opportunities = weekend_filtered
+            if not opportunities:
+                log.info(
+                    "All proactive opportunities were office-related — "
+                    "skipped because it's the weekend."
+                )
+                return None
 
         # Conversation-aware filter: drop opportunities the user already
         # addressed in the last 24h of conversation (e.g. they already said
@@ -2077,6 +2118,11 @@ def _check_upcoming_appointments(now: datetime):
     LLM to generate the reminder message when an event is confirmed.
     """
     try:
+        # WEEKEND CHECK: Don't remind users to call offices on weekends.
+        # Used in the loop below to skip office-related appointment lines
+        # when today is Saturday or Sunday.
+        is_weekend = now.weekday() >= 5  # 5=Saturday, 6=Sunday
+
         upcoming = kb.get_domain("upcoming.md")
         if not upcoming:
             return
@@ -2105,6 +2151,21 @@ def _check_upcoming_appointments(now: datetime):
             # Look for ISO dates
             date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', line)
             if date_match:
+                # WEEKEND CHECK: If this is a reminder to call an office and
+                # it's the weekend, skip it — offices are closed Saturday
+                # and Sunday. Online/MyChart/app lines still go through.
+                if is_weekend:
+                    line_lower = line.lower()
+                    office_keywords = [
+                        "call", "office", "follow up", "fax",
+                        "dr lu", "dr. lu", "surgeon",
+                    ]
+                    if any(kw in line_lower for kw in office_keywords):
+                        log.info(
+                            f"Skipping weekend office reminder: "
+                            f"{line[:80]}"
+                        )
+                        continue
                 try:
                     event_date = datetime(int(date_match.group(1)),
                                         int(date_match.group(2)),

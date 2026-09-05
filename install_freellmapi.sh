@@ -27,6 +27,10 @@ print_err()  { echo -e "${RED}[X]${NC} $1"; }
 
 UNIFIED_KEY="${1:-}"
 
+# GitHub token for the phone lock system (read from env — never hardcode).
+# Set with:  export GITHUB_TOKEN="github_pat_..."
+GH_PAT="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+
 # 1. Check Node.js
 print_step "Checking Node.js"
 if ! command -v node &>/dev/null; then
@@ -122,6 +126,17 @@ if [[ -n "$UNIFIED_KEY" ]]; then
     # Add the new key
     echo "FREELLMAPI_API_KEY=$UNIFIED_KEY" >> "$ENV_FILE"
     print_ok "Unified key written to $ENV_FILE"
+
+    # Also add GITHUB_TOKEN for the phone lock system
+    if ! grep -q "^GITHUB_TOKEN=" "$ENV_FILE"; then
+        if [[ -n "$GH_PAT" ]]; then
+            echo "GITHUB_TOKEN=$GH_PAT" >> "$ENV_FILE"
+            print_ok "Added GITHUB_TOKEN to .env (for phone lock)"
+        else
+            print_warn "GITHUB_TOKEN env var is empty — phone lock will be disabled."
+            print_warn "Set it with:  export GITHUB_TOKEN=\"github_pat_...\"  then re-run this script."
+        fi
+    fi
 
     # ALSO save to permanent storage (survives updates)
     PERMANENT_KEY_FILE="$HOME/ai-twin-memory/freellmapi_key.txt"

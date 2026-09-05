@@ -2769,6 +2769,171 @@ def _scheduler_loop():
 
 
 # ---------------------------------------------------------------------- #
+# Phone Lock (gist-based)
+# ---------------------------------------------------------------------- #
+# Prevents two phones from running the twin at the same time. The active
+# phone writes a heartbeat to a private GitHub gist every 5 minutes. On
+# startup, the twin reads the gist and refuses to start if a fresh
+# heartbeat from a DIFFERENT phone_id is found.
+#
+# Resilience: if GitHub is unreachable, the lock fails OPEN — the twin
+# starts anyway. We never block the user's twin because GitHub is down.
+# The phone_id persists in ~/ai-twin-memory/phone_id.txt (survives updates).
+
+_phone_id = ""
+_gist_id = ""
+_github_token = ""
+
+
+def _init_phone_lock() -> bool:
+    """Initialize the phone lock system.
+
+    Returns True if the lock system is active (has a token + gist),
+    False if it's disabled (no token) or couldn't be initialized.
+    The twin should still start if this returns False — the lock is a
+    safety feature, not a hard requirement.
+    """
+    global _phone_id, _gist_id, _github_token
+
+    # Get or generate phone_id (persists across updates)
+    phone_id_path = Path.home() / "ai-twin-memory" / "phone_id.txt"
+    try:
+        if phone_id_path.exists():
+            _phone_id = phone_id_path.read_text(encoding="utf-8").strip()
+        else:
+            import uuid
+            _phone_id = str(uuid.uuid4())
+            phone_id_path.parent.mkdir(parents=True, exist_ok=True)
+            phone_id_path.write_text(_phone_id, encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Could not init phone_id: {e}")
+        return False
+
+    # Get GitHub token from env
+    _github_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not _github_token:
+        log.info("No GITHUB_TOKEN in .env — phone lock disabled")
+        return False
+
+    # Get or create gist
+    gist_id_path = Path.home() / "ai-twin-memory" / "gist_id.txt"
+    if gist_id_path.exists():
+        _gist_id = gist_id_path.read_text(encoding="utf-8").strip()
+    else:
+        # Create a new private gist
+        try:
+            resp = requests.post(
+                "https://api.github.com/gists",
+                headers={
+                    "Authorization": f"token {_github_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                json={
+                    "description": "AI Twin phone lock",
+                    "public": False,
+                    "files": {"lock.json": {"content": json.dumps({
+                        "phone_id": _phone_id,
+                        "timestamp": time.time()
+                    })}},
+                },
+                timeout=15,
+            )
+            if resp.status_code == 201:
+                _gist_id = resp.json()["id"]
+                gist_id_path.parent.mkdir(parents=True, exist_ok=True)
+                gist_id_path.write_text(_gist_id, encoding="utf-8")
+                log.info(f"Created phone lock gist: {_gist_id}")
+            else:
+                log.warning(f"Failed to create gist: {resp.status_code} {resp.text[:200]}")
+                return False
+        except Exception as e:
+            log.warning(f"Failed to create gist: {e}")
+            return False
+
+    return True
+
+
+def _check_phone_lock() -> bool:
+    """Check if another phone is active.
+
+    Returns True if it's safe to start (no other phone is active),
+    False if another phone has a fresh heartbeat. Fails OPEN — if
+    GitHub is unreachable or the gist can't be read, returns True
+    (so the twin still starts on network errors).
+    """
+    if not _gist_id or not _github_token:
+        return True  # No lock system — allow start
+
+    try:
+        resp = requests.get(
+            f"https://api.github.com/gists/{_gist_id}",
+            headers={
+                "Authorization": f"token {_github_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Failed to read gist: {resp.status_code}")
+            return True  # Can't read — fail open
+
+        gist = resp.json()
+        lock_file = gist.get("files", {}).get("lock.json", {})
+        content = lock_file.get("content", "")
+        if not content:
+            return True
+
+        lock = json.loads(content)
+        other_phone_id = lock.get("phone_id", "")
+        timestamp = lock.get("timestamp", 0)
+
+        if other_phone_id == _phone_id:
+            return True  # Our own heartbeat — safe
+
+        age = time.time() - timestamp
+        if age < 300:  # 5 minutes
+            log.warning(
+                f"Another phone is active (phone_id: {other_phone_id[:8]}..., "
+                f"age: {age:.0f}s)"
+            )
+            return False  # Another phone is active
+
+        return True  # Other phone's heartbeat is stale — safe
+    except Exception as e:
+        log.warning(f"Error checking phone lock: {e}")
+        return True  # Fail open
+
+
+def _update_phone_heartbeat():
+    """Update the gist with a fresh heartbeat."""
+    if not _gist_id or not _github_token:
+        return
+
+    try:
+        content = json.dumps({"phone_id": _phone_id, "timestamp": time.time()})
+        resp = requests.patch(
+            f"https://api.github.com/gists/{_gist_id}",
+            headers={
+                "Authorization": f"token {_github_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={"files": {"lock.json": {"content": content}}},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            log.warning(f"Failed to update heartbeat: {resp.status_code}")
+    except Exception as e:
+        log.warning(f"Error updating heartbeat: {e}")
+
+
+def _phone_lock_heartbeat_loop():
+    """Background thread that sends a heartbeat every 5 minutes."""
+    while True:
+        time.sleep(300)  # 5 minutes
+        _update_phone_heartbeat()
+
+
+# ---------------------------------------------------------------------- #
 # Main
 # ---------------------------------------------------------------------- #
 
@@ -2817,6 +2982,33 @@ def main() -> None:
     checkin_thread = threading.Thread(target=_daily_check_in_loop, daemon=True)
     checkin_thread.start()
     log.info("Daily check-in thread started")
+
+    # Initialize phone lock — refuses to start if another phone is
+    # actively running the twin (heartbeat within last 5 minutes from
+    # a different phone_id). Fails OPEN if GitHub is unreachable.
+    if _init_phone_lock():
+        log.info(f"Phone lock initialized (phone_id: {_phone_id[:8]}...)")
+
+        # Check if another phone is active BEFORE starting the polling loop
+        if not _check_phone_lock():
+            log.error("Another twin is running on a different phone. Refusing to start.")
+            try:
+                _send_telegram_message(
+                    ALLOWED_USER_ID,
+                    "Another twin is running on a different phone. Stop it first, "
+                    "then restart me."
+                )
+            except Exception:
+                pass
+            sys.exit(1)
+
+        # Start heartbeat thread (writes to gist every 5 minutes)
+        heartbeat_thread = threading.Thread(target=_phone_lock_heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+        log.info("Phone lock heartbeat thread started")
+
+        # Send an initial heartbeat so this phone immediately claims the lock
+        _update_phone_heartbeat()
 
     # Wait for FreeLLMAPI to come up (if it's the first provider in the
     # order). FreeLLMAPI takes 15-30s to start; without this wait the

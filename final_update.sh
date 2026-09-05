@@ -118,6 +118,17 @@ else
     print_warn "No permanent FreeLLMAPI key found. Run install_freellmapi.sh with your key to set it permanently."
 fi
 
+# Also restore GITHUB_TOKEN for phone lock
+if ! grep -q "^GITHUB_TOKEN=" ~/ai-twin/.env 2>/dev/null; then
+    if [[ -n "$TOKEN" ]]; then
+        echo "GITHUB_TOKEN=$TOKEN" >> ~/ai-twin/.env
+        print_ok "Added GITHUB_TOKEN to .env (for phone lock)"
+    else
+        print_warn "GITHUB_TOKEN env var is empty — phone lock will be disabled."
+        print_warn "Set it with:  export GITHUB_TOKEN=\"github_pat_...\"  then re-run this script."
+    fi
+fi
+
 # ------------------------------------------------------------
 # 4. Update voice profile from latest template
 # ------------------------------------------------------------

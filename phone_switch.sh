@@ -383,10 +383,30 @@ EOF
     # 10. Start twin
     print_step "Starting twin"
     cd ~/ai-twin
+
+    # Run keep_alive_setup.sh to create twin-start/twin-stop/twin-logs/twin-status commands
+    if [[ -f ~/ai-twin/keep_alive_setup.sh ]]; then
+        bash ~/ai-twin/keep_alive_setup.sh >/dev/null 2>&1 || true
+        print_ok "Installed twin-start/twin-stop/twin-logs commands"
+    fi
+
+    # Make sure ~/bin is in PATH
+    export PATH="$HOME/bin:$PATH"
+
+    # Stop any existing twin
     twin-stop 2>/dev/null || true
     sleep 1
-    twin-start
-    sleep 3
+
+    # Start the twin
+    if command -v twin-start &>/dev/null; then
+        twin-start
+        sleep 3
+    else
+        # Fallback: start directly in tmux
+        tmux kill-session -t twin 2>/dev/null || true
+        tmux new-session -d -s twin "cd ~/ai-twin && python twin_bot.py"
+        sleep 3
+    fi
 
     # 11. Verify
     print_step "Verifying"

@@ -3302,43 +3302,64 @@ def main() -> None:
     except Exception as e:
         log.error(f"Unanswered queue processing failed at startup: {e}")
 
-    # FIX 3 (Part A) — Auto-update: pull the latest code from GitHub on
-    # startup. If the remote has new commits, pull them down and notify
-    # the user (they can apply the update by saying "/update" or just
-    # "update yourself", which restarts the twin to load the new code).
-    # We DON'T restart automatically here because the user might be in
-    # the middle of a conversation — better to let them trigger the
-    # restart at a convenient moment. If the pull fails (network, dirty
-    # tree), we just log a warning and continue — never block startup.
+    # FIX 3 (Part A) — Lightweight update check: fetch ONLY the latest
+    # commit SHA from the GitHub API (1 HTTP GET, ~1 KB response) and
+    # compare it to the SHA stored in
+    # ~/ai-twin-memory/last_known_commit.txt.
+    #   • SHAs match  → no update, do nothing (no download, no notify).
+    #   • SHAs differ → new code on GitHub → send ONE Telegram message:
+    #     "new code on github. say /update to apply." and persist the
+    #     new SHA so we don't notify twice.
+    # The actual `git pull --ff-only` only runs when the user says
+    # "update" (handled by the /update command and the natural-language
+    # trigger in handle_text). Skipping the full pull on every startup
+    # avoids downloading the repo when there's nothing new — important
+    # on a metered data plan. If GITHUB_TOKEN is missing or GitHub is
+    # unreachable, we skip silently — never block startup.
     try:
-        log.info("Checking for code updates on GitHub...")
-        import subprocess
-        result = subprocess.run(
-            ["git", "pull", "--ff-only"],
-            capture_output=True, text=True, timeout=30,
-            cwd=str(Path(__file__).parent)
-        )
-        # rc=0 + stdout not containing "Already up to date" → new code
-        # pulled down. Anything else (rc!=0, or already up to date) is
-        # a no-op for our purposes.
-        if (result.returncode == 0
-                and result.stdout
-                and "Already up to date" not in result.stdout):
-            log.info(f"Code updated on startup: {result.stdout[:200]!r}")
-            try:
-                _send_telegram_message(
-                    ALLOWED_USER_ID,
-                    "code updated on github. say /update to apply."
-                )
-            except Exception:
-                pass
-        else:
-            log.info(
-                f"Code already up to date (rc={result.returncode}, "
-                f"stdout={result.stdout[:120]!r})"
+        GITHUB_TOKEN_FOR_CHECK = os.environ.get("GITHUB_TOKEN", "").strip()
+        if GITHUB_TOKEN_FOR_CHECK:
+            log.info("Checking for code updates on GitHub (SHA check)...")
+            resp = requests.get(
+                "https://api.github.com/repos/TYKO-sys/ai-twin-phase1/commits/phase2",
+                headers={
+                    "Authorization": f"token {GITHUB_TOKEN_FOR_CHECK}",
+                    "Accept": "application/vnd.github+json",
+                },
+                timeout=10,
             )
+            if resp.status_code == 200:
+                latest_sha = resp.json().get("sha", "")
+                sha_file = Path.home() / "ai-twin-memory" / "last_known_commit.txt"
+                known_sha = ""
+                if sha_file.exists():
+                    known_sha = sha_file.read_text(encoding="utf-8").strip()
+
+                if latest_sha and latest_sha != known_sha:
+                    log.info(f"New code on GitHub (SHA: {latest_sha[:8]}). Notifying user.")
+                    # Persist the new SHA BEFORE notifying so a transient
+                    # Telegram failure can't cause repeat notifications
+                    # on every restart.
+                    try:
+                        sha_file.parent.mkdir(parents=True, exist_ok=True)
+                        sha_file.write_text(latest_sha, encoding="utf-8")
+                    except Exception as write_err:
+                        log.warning(f"Could not persist new SHA: {write_err}")
+                    try:
+                        _send_telegram_message(
+                            ALLOWED_USER_ID,
+                            "new code on github. say /update to apply."
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log.info("Code already up to date (SHA matches)")
+            else:
+                log.warning(f"SHA check failed: HTTP {resp.status_code}")
+        else:
+            log.info("No GITHUB_TOKEN — skipping update check")
     except Exception as e:
-        log.warning(f"Auto-update check failed at startup: {e}")
+        log.warning(f"Update check failed: {e}")
 
     # Wrap polling in a retry loop. Android's network management kills
     # long-polling connections periodically (ConnectionAbortedError 103).

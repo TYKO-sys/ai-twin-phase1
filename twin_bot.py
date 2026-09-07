@@ -2092,7 +2092,7 @@ Write the message:"""
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak. No 'how are you' openers. No 'just checking in.'",
+            system_instruction=SYSTEM_PROMPT,
         )
         msg = (response or "").strip()
         if msg:
@@ -2224,7 +2224,7 @@ def _send_proactive_reminder(event_text: str, hours_until: float, urgent: bool):
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction="Write a short, natural text message. Be brief and specific. No fluff.",
+            system_instruction=SYSTEM_PROMPT,
         )
 
         if response and len(response) > 5:
@@ -2293,7 +2293,7 @@ Write the message now (in TYKO's voice — short, casual, lowercase, contraction
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak. No 'how are you' openers.",
+            system_instruction=SYSTEM_PROMPT,
         )
         msg = (response or "").strip()
         if msg:
@@ -2786,9 +2786,11 @@ RSS ITEMS:
 
 Your text:"""
 
-            digest_system = ("You write like a friend texting another friend. "
-                             "Short, specific, no AI-speak. No corporate blog "
-                             "phrases. Use contractions. Vary sentence length.")
+            # All automated LLM calls now use the full SYSTEM_PROMPT so the
+            # 25+ voice rules apply to every outbound message, not just the
+            # interactive conversation path. Same constant for all three
+            # fallbacks (generate / generate_text / generate_with_tools).
+            digest_system = SYSTEM_PROMPT
 
             digest_text = None
             # Preferred: plain-text generate() (no tool loop needed for a digest)
@@ -2877,17 +2879,48 @@ def _daily_check_in_loop():
             if not review or len(review) < 20:
                 continue  # Nothing to check in about
 
+            # Bug 3: Check if the user already addressed these tasks in
+            # conversation. If they said "i already did X" in the last 24h,
+            # don't nudge them about X again — that's annoying and stale.
+            recent_conv = _load_recent_conversation(hours=24)
+            if recent_conv:
+                # Create a fake opportunity dict to pass to _user_already_addressed
+                fake_opp = {"reason": "morning_briefing", "context": review}
+                if _user_already_addressed(fake_opp, recent_conv):
+                    log.info("Daily check-in skipped — user already addressed these tasks in conversation")
+                    last_run_date = now.date()
+                    continue
+
+            # Bug 4: Don't send check-in if user was emotional recently
+            # (give them space — e.g. "i've been crying all weekend" should
+            # not be followed by a 9am task nudge).
+            if _user_was_emotional_recently():
+                log.info("Daily check-in skipped — user was emotional recently, giving space")
+                last_run_date = now.date()
+                continue
+
+            # Bug 5: Weekend check — don't suggest calling offices on
+            # Saturday/Sunday. Still send a check-in, but tell the LLM in
+            # the prompt to only suggest weekend-doable tasks.
+            is_weekend = now.weekday() >= 5
+            if is_weekend:
+                # Still send a check-in, but filter out office-call tasks
+                # We'll pass this info to the LLM in the prompt
+                weekend_note = "\n\nNOTE: It's a weekend (Saturday/Sunday). Offices are closed. Don't suggest calling any office. Only suggest things that can be done on weekends (MyChart, online tasks, personal prep, rest)."
+            else:
+                weekend_note = ""
+
             prompt = f"""Write a 2-4 sentence morning check-in text to TYKO. Reference the blocked tasks and the suggested-now task. Be casual, in TYKO's voice (short, lowercase, contractions, no AI-speak). End with one direct question like "want me to walk through it?" or "what's the move?"
 
 Task review:
-{review}
+{review}{weekend_note}
 
 Write the message now:"""
 
             try:
                 response = llm_client.generate(
                     prompt=prompt,
-                    system_instruction="You write like a friend texting another friend. Short, lowercase, contractions, casual. No AI-speak.",
+                    system_instruction=SYSTEM_PROMPT,
                 )
                 msg = (response or "").strip()
                 if msg:

@@ -151,34 +151,6 @@ if ! grep -q "^GITHUB_TOKEN=" ~/ai-twin/.env 2>/dev/null; then
 fi
 
 # ------------------------------------------------------------
-# 3.7. Verify FreeLLMAPI connection
-# ------------------------------------------------------------
-print_step "Step 3.7: Verify FreeLLMAPI connection"
-{
-sleep 5  # Give FreeLLMAPI time to start
-FLM_STATUS=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
-if [[ "$FLM_STATUS" == "200" ]]; then
-    print_ok "FreeLLMAPI is responding (HTTP 200)"
-elif [[ "$FLM_STATUS" == "401" ]]; then
-    print_warn "FreeLLMAPI returns 401 — key mismatch"
-    print_warn "Open http://localhost:5173 → Keys page → copy the unified key"
-    print_warn "Then run: bash ~/ai-twin/install_freellmapi.sh YOUR_KEY"
-elif [[ "$FLM_STATUS" == "000" ]]; then
-    print_warn "FreeLLMAPI is not responding — starting it now"
-    tmux new-session -d -s freellmapi ~/freellmapi-run.sh 2>/dev/null || true
-    sleep 15
-    FLM_RETRY=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
-    if [[ "$FLM_RETRY" == "200" ]]; then
-        print_ok "FreeLLMAPI started successfully"
-    else
-        print_err "FreeLLMAPI still not responding. Check: tmux attach -t freellmapi"
-    fi
-else
-    print_warn "FreeLLMAPI returned HTTP $FLM_STATUS"
-fi
-} || true
-
-# ------------------------------------------------------------
 # 4. Update voice profile from latest template
 # ------------------------------------------------------------
 print_step "Step 4: Update voice profile"

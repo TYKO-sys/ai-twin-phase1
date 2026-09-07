@@ -241,7 +241,14 @@ _im_here_reset_date = None
 # Initialize bot — HTML mode for rich text formatting.
 # All LLM responses (which are Markdown) get converted to Telegram HTML
 # before sending. This gives the user bold, italic, code blocks, links, etc.
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML")
+# timeout=15 sets the default HTTP timeout (in seconds) for ALL Telegram
+# API requests made through this bot instance (send_message, getUpdates,
+# etc.). Previously the bot would hang for 60 seconds on a stalled send
+# before giving up; 15s gives faster failure + retry. Note: this also
+# bounds the getUpdates long-poll HTTP request, so long_polling_timeout
+# in infinity_polling() below is set to 5 (well under 15) to keep
+# polling functional.
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML", timeout=15)
 
 
 # ---------------------------------------------------------------------- #
@@ -540,7 +547,7 @@ def _send_telegram_message(chat_id: int, text: str,
         try:
             # Always send as standalone message (no reply_to_message_id)
             # This removes the "reply preview" that Telegram shows
-            bot.send_message(chat_id, html_text, timeout=60)
+            bot.send_message(chat_id, html_text, timeout=15)
             return True
         except Exception as e:
             wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds
@@ -575,7 +582,7 @@ def _safe_reply(message, text: str) -> None:
                     chat_id,
                     "(I tried to reply but Telegram's servers are having "
                     "issues. Please wait a minute and resend your message.)",
-                    timeout=60,
+                    timeout=15,
                 )
             except Exception:
                 pass
@@ -619,7 +626,7 @@ def _safe_reply(message, text: str) -> None:
                 f"(Note: {lost_chunks} of {len(parts)} parts of my response "
                 f"failed to send due to Telegram server issues. "
                 f"Say 'resend' and I'll regenerate my full reply.)",
-                timeout=60,
+                timeout=15,
             )
         except Exception:
             pass
@@ -1622,7 +1629,7 @@ def _send_direct_message(text: str) -> bool:
     without needing the user to send a command first.
     """
     try:
-        bot.send_message(ALLOWED_USER_ID, text, timeout=60)
+        bot.send_message(ALLOWED_USER_ID, text, timeout=15)
         return True
     except Exception as e:
         log.error(f"Direct message send failed: {e}")
@@ -3604,8 +3611,8 @@ def main() -> None:
         try:
             bot.infinity_polling(
                 skip_pending=False,
-                timeout=60,
-                long_polling_timeout=30,
+                timeout=15,
+                long_polling_timeout=5,
                 # Don't let telebot's internal error handler swallow crashes
                 # that we want to catch and retry
                 logger_level=None,

@@ -91,6 +91,16 @@ print_ok "Latest code cloned from phase2"
 LATEST_COMMIT=$(cd ~/ai-twin && git log -1 --oneline 2>/dev/null | head -1)
 print_ok "Latest commit: $LATEST_COMMIT"
 
+# Update the SHA cache so the twin doesn't notify about code we just pulled
+cd ~/ai-twin
+CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null)
+if [[ -n "$CURRENT_SHA" ]]; then
+    mkdir -p ~/ai-twin-memory
+    echo "$CURRENT_SHA" > ~/ai-twin-memory/last_known_commit.txt
+    print_ok "SHA cache updated to ${CURRENT_SHA:0:8}"
+fi
+cd ~
+
 # ------------------------------------------------------------
 # 3. Restore .env from backup (preserves API keys + SMTP + FreeLLMAPI key)
 # ------------------------------------------------------------
@@ -138,6 +148,32 @@ if ! grep -q "^GITHUB_TOKEN=" ~/ai-twin/.env 2>/dev/null; then
         print_warn "GITHUB_TOKEN env var is empty — phone lock will be disabled."
         print_warn "Set it with:  export GITHUB_TOKEN=\"github_pat_...\"  then re-run this script."
     fi
+fi
+
+# ------------------------------------------------------------
+# 3.7. Verify FreeLLMAPI connection
+# ------------------------------------------------------------
+print_step "Step 3.7: Verify FreeLLMAPI connection"
+sleep 5  # Give FreeLLMAPI time to start
+FLM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
+if [[ "$FLM_STATUS" == "200" ]]; then
+    print_ok "FreeLLMAPI is responding (HTTP 200)"
+elif [[ "$FLM_STATUS" == "401" ]]; then
+    print_warn "FreeLLMAPI returns 401 — key mismatch"
+    print_warn "Open http://localhost:5173 → Keys page → copy the unified key"
+    print_warn "Then run: bash ~/ai-twin/install_freellmapi.sh YOUR_KEY"
+elif [[ "$FLM_STATUS" == "000" ]]; then
+    print_warn "FreeLLMAPI is not responding — starting it now"
+    tmux new-session -d -s freellmapi ~/freellmapi-run.sh 2>/dev/null || true
+    sleep 15
+    FLM_RETRY=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
+    if [[ "$FLM_RETRY" == "200" ]]; then
+        print_ok "FreeLLMAPI started successfully"
+    else
+        print_err "FreeLLMAPI still not responding. Check: tmux attach -t freellmapi"
+    fi
+else
+    print_warn "FreeLLMAPI returned HTTP $FLM_STATUS"
 fi
 
 # ------------------------------------------------------------
@@ -364,66 +400,42 @@ else
 fi
 
 # ------------------------------------------------------------
-# 8.7. BUG 3 FIX — Reorder .bashrc / .profile so PATH export
-# comes BEFORE the hook lines.
+# 8.7. Aggressively clean ALL hook lines from .bashrc/.profile
+# and re-add them in the correct order (PATH first, then hooks).
 # ------------------------------------------------------------
-# The earlier steps append lines in this order:
-#   1. ensure_freellmapi hook  (Step 8.5)
-#   2. export PATH="$HOME/bin:$PATH"  (Step 8.6 — only added if missing)
-#   3. ensure_twin hook  (Step 8.6)
-# That means the ensure_freellmapi hook fires BEFORE the PATH export,
-# so any command it calls from ~/bin/ (e.g. `freellmapi-start`,
-# `twin-start`) is "command not found" on the first Termux open of
-# the session — the user reported exactly this as
-# "twin-start: command not found".
-#
-# Fix: strip the three relevant lines from both .bashrc and .profile
-# and re-append them in the correct order (PATH first, then the two
-# hooks). This is idempotent — running final_update.sh again produces
-# the same end state. We use sed -i for the strip so the file content
-# is preserved (just the matching lines are removed), not appended
-# to.
-print_step "Step 8.7: Reorder .bashrc/.profile — PATH export before hooks (BUG 3 fix)"
+# The previous Step 8.7 used sed patterns that required the hook
+# lines to end in '&' (e.g. '/ensure_freellmapi\.sh.*&$/d'). That
+# missed some old hook lines that had been written without the
+# trailing '&', leaving duplicates in .bashrc/.profile. The new
+# approach removes ALL lines containing "ensure_freellmapi" or
+# "ensure_twin" regardless of their exact form, then re-adds the
+# three lines in the correct order (PATH first, then FreeLLMAPI
+# hook, then twin hook). This is fully idempotent: running
+# final_update.sh multiple times produces zero duplicate lines.
+print_step "Step 8.7: Aggressively clean + re-add .bashrc/.profile hooks"
 
-for RCFILE in "$BASHRC" "$PROFILE"; do
-    # Skip silently if the file doesn't exist — we only reorder what's
-    # already there. A missing .bashrc is a Termux misconfiguration but
-    # not one we should fix here.
-    [[ -f "$RCFILE" ]] || continue
-
-    # Strip the three relevant lines (if present). The patterns are
-    # specific enough to only match the lines we wrote, not user-added
-    # lines that happen to contain "ensure_twin" in a comment.
-    sed -i '/ensure_freellmapi\.sh.*&$/d' "$RCFILE" 2>/dev/null || true
-    sed -i '/ensure_twin\.sh.*&$/d' "$RCFILE" 2>/dev/null || true
-    sed -i '/export PATH="$HOME\/bin:$PATH"/d' "$RCFILE" 2>/dev/null || true
-    # Also strip the comment lines that previously appeared above the
-    # hook lines — both the old per-hook comments ("# Auto-start
-    # FreeLLMAPI on Termux open" / "# Auto-start twin on Termux open")
-    # and the unified "# Termux startup hooks..." comment we add below.
-    # Stripping them too makes this step fully idempotent: running
-    # final_update.sh twice produces the same end state (no accumulating
-    # duplicate comments).
-    sed -i '/^# Auto-start FreeLLMAPI on Termux open$/d' "$RCFILE" 2>/dev/null || true
-    sed -i '/^# Auto-start twin on Termux open$/d' "$RCFILE" 2>/dev/null || true
-    sed -i '/^# Termux startup hooks — PATH must come first/d' "$RCFILE" 2>/dev/null || true
-
-    # Re-add the three lines in the correct order:
-    #   1. PATH export (so ~/bin commands are findable)
-    #   2. FreeLLMAPI hook (depends on ~/bin)
-    #   3. Twin hook (depends on ~/bin)
-    {
-        echo ''
-        echo '# Termux startup hooks — PATH must come first so the hooks can find ~/bin commands'
-        echo 'export PATH="$HOME/bin:$PATH"'
-        echo '# Auto-start FreeLLMAPI on Termux open'
-        echo '[ -f "$HOME/bin/ensure_freellmapi.sh" ] && bash "$HOME/bin/ensure_freellmapi.sh" >/dev/null 2>&1 &'
-        echo '# Auto-start twin on Termux open'
-        echo '[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &'
-    } >> "$RCFILE"
-
-    print_ok "Reordered $(basename "$RCFILE"): PATH export now precedes the ensure_freellmapi + ensure_twin hooks"
+# Aggressively clean ALL hook lines from .bashrc and .profile
+for f in "$HOME/.bashrc" "$HOME/.profile"; do
+    if [[ -f "$f" ]]; then
+        # Remove ALL lines containing ensure_freellmapi or ensure_twin
+        sed -i '/ensure_freellmapi/d' "$f"
+        sed -i '/ensure_twin/d' "$f"
+        # Remove ALL lines with the PATH export for ~/bin
+        sed -i '/export PATH="$HOME\/bin/d' "$f"
+        # Remove empty comment lines that were left behind
+        sed -i '/^# Auto-start FreeLLMAPI on Termux open$/d' "$f"
+        sed -i '/^# Auto-start twin on Termux open$/d' "$f"
+    fi
 done
+
+# Re-add in correct order: PATH first, then hooks
+for f in "$HOME/.bashrc" "$HOME/.profile"; do
+    echo '' >> "$f"
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$f"
+    echo '[ -f "$HOME/bin/ensure_freellmapi.sh" ] && bash "$HOME/bin/ensure_freellmapi.sh" >/dev/null 2>&1 &' >> "$f"
+    echo '[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &' >> "$f"
+done
+print_ok "Cleaned and re-added hooks in correct order (PATH → FreeLLMAPI → twin)"
 
 # ------------------------------------------------------------
 # 9. Set up Termux:Boot auto-start for FreeLLMAPI (if installed)

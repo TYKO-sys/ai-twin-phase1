@@ -200,6 +200,7 @@ BANNED (specific phrases — these are examples, not the full list):
 - "Just say the word and I'll..."
 - "I can...if you want"
 - "Want me to walk you through it?"
+- "Want me to walk through it?" (NEW — lowercase variant the twin actually said)
 - "What's your energy like?" (NEW — this is asking the user to decide)
 - "Which one?" (NEW — asking the user to pick)
 - "Up to you. What's your energy like?" (NEW — combo)

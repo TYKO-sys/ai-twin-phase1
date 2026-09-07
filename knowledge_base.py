@@ -41,7 +41,7 @@ RULES:
 - If nothing changed about their core identity, keep the existing text and just update the date.
 
 Write the updated identity now:""",
-     500),  # ~125 tokens — strict limit
+     1000),  # ~250 tokens — strict limit
 
     ("situation.md",
      "current life circumstances — what TYKO is dealing with RIGHT NOW",
@@ -57,7 +57,7 @@ RULES:
 - Write in second person: "You are dealing with..." not "They are..."
 
 Write the updated situation now:""",
-     800),  # ~200 tokens
+     1500),  # ~375 tokens
 
     ("tasks.md",
      "what needs doing — ACTIVE tasks only",
@@ -75,7 +75,7 @@ RULES:
 - Write in second person.
 
 Write the updated task list now:""",
-     600),  # ~150 tokens
+     1200),  # ~300 tokens
 
     ("relationships.md",
      "key people — who they are and what's unresolved",
@@ -91,7 +91,7 @@ RULES:
 - Write in second person: "Your relationship with..."
 
 Write the updated relationships now:""",
-     500),  # ~125 tokens
+     1000),  # ~250 tokens
 
     ("patterns.md",
      "behavioral patterns — observed 3+ times minimum",
@@ -111,7 +111,7 @@ RULES:
 - Write in second person: "You tend to..." not "The user tends to..."
 
 Write the updated patterns now:""",
-     500),  # ~125 tokens
+     1000),  # ~250 tokens
 
     ("completed.md",
      "recent wins — what got done in the last 7 days only",
@@ -126,7 +126,7 @@ RULES:
 - Write in second person: "You completed..."
 
 Write the updated completed list now:""",
-     500),  # ~125 tokens
+     1000),  # ~250 tokens
 
     ("upcoming.md",
      "what's coming — events within the next 30 days",
@@ -142,7 +142,7 @@ RULES:
 - Write in second person: "You have..."
 
 Write the updated upcoming list now:""",
-     500),  # ~125 tokens
+     1000),  # ~250 tokens
 
     ("insights.md",
      "deep understanding — the why behind things",
@@ -158,7 +158,7 @@ RULES:
 - Do NOT repeat information from other domains. This is synthesis, not summary.
 
 Write the updated insights now:""",
-     400),  # ~100 tokens
+     800),  # ~200 tokens
 ]
 
 
@@ -189,7 +189,7 @@ class KnowledgeBase:
     def get_all_knowledge(self) -> str:
         """Get all knowledge domains formatted for context.
 
-        Total target: under 1500 tokens (~6000 chars).
+        Total target: under 2500 tokens (~8500 chars).
         """
         now = datetime.now()
         date_anchor = now.strftime("%A, %B %d, %Y at %I:%M %p")

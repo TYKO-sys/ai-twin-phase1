@@ -374,42 +374,67 @@ else
 fi
 
 # ------------------------------------------------------------
-# 8.7. Aggressively clean ALL hook lines from .bashrc/.profile
-# and re-add them in the correct order (PATH first, then hooks).
+# 8.7. Prepend PATH as the FIRST line of .bashrc/.profile,
+# then append the auto-start hooks at the end. Idempotent.
 # ------------------------------------------------------------
-# The previous Step 8.7 used sed patterns that required the hook
-# lines to end in '&' (e.g. '/ensure_freellmapi\.sh.*&$/d'). That
-# missed some old hook lines that had been written without the
-# trailing '&', leaving duplicates in .bashrc/.profile. The new
-# approach removes ALL lines containing "ensure_freellmapi" or
-# "ensure_twin" regardless of their exact form, then re-adds the
-# three lines in the correct order (PATH first, then FreeLLMAPI
-# hook, then twin hook). This is fully idempotent: running
-# final_update.sh multiple times produces zero duplicate lines.
-print_step "Step 8.7: Aggressively clean + re-add .bashrc/.profile hooks"
+# The previous Step 8.7 appended the PATH export + hooks to the
+# END of .bashrc/.profile. That left PATH buried under whatever
+# else the user (or Termux default) had put in the file, so the
+# FIRST interactive prompt ran before `export PATH="$HOME/bin:$PATH"`
+# had executed — and `twin-start` showed "command not found".
+#
+# The fix: PREPEND `export PATH="$HOME/bin:$PATH"` as the very
+# first line of .bashrc and .profile so it runs before anything
+# else. The auto-start hooks (ensure_freellmapi.sh / ensure_twin.sh)
+# stay at the end. Fully idempotent: running final_update.sh
+# multiple times produces zero duplicate lines and always keeps
+# PATH on line 1.
+print_step "Step 8.7: Prepend PATH as first line of .bashrc/.profile"
 
-# Aggressively clean ALL hook lines from .bashrc and .profile
 for f in "$HOME/.bashrc" "$HOME/.profile"; do
-    if [[ -f "$f" ]]; then
-        # Remove ALL lines containing ensure_freellmapi or ensure_twin
-        sed -i '/ensure_freellmapi/d' "$f"
-        sed -i '/ensure_twin/d' "$f"
-        # Remove ALL lines with the PATH export for ~/bin
-        sed -i '/export PATH="$HOME\/bin/d' "$f"
-        # Remove empty comment lines that were left behind
-        sed -i '/^# Auto-start FreeLLMAPI on Termux open$/d' "$f"
-        sed -i '/^# Auto-start twin on Termux open$/d' "$f"
+    # Create the file if it doesn't exist yet
+    if [[ ! -f "$f" ]]; then
+        touch "$f" 2>/dev/null
     fi
+
+    # Strip ALL old PATH exports and hook lines so we can re-emit
+    # them cleanly (idempotent — no duplicates on re-run).
+    sed -i '/export PATH="$HOME\/bin/d' "$f" 2>/dev/null || true
+    sed -i '/ensure_freellmapi/d' "$f" 2>/dev/null || true
+    sed -i '/ensure_twin/d' "$f" 2>/dev/null || true
+    sed -i '/# Auto-start/d' "$f" 2>/dev/null || true
+
+    # Rebuild: line 1 = PATH export, then the existing (cleaned)
+    # content, then the two auto-start hooks at the end. Trimming
+    # leading/trailing blank lines from the existing content keeps
+    # the file byte-identical across re-runs (truly idempotent —
+    # no blank-line accumulation).
+    CLEANED=$(awk 'NF{p=1} p' "$f" | awk '{a[NR]=$0} END{e=NR; while(e>=1 && a[e]~/^[[:space:]]*$/) e--; for(i=1;i<=e;i++) print a[i]}')
+    TMP=$(mktemp)
+    {
+        echo 'export PATH="$HOME/bin:$PATH"'
+        echo ""
+        printf '%s\n' "$CLEANED"
+        echo ""
+        echo '# Auto-start FreeLLMAPI on Termux open'
+        echo '[ -f "$HOME/bin/ensure_freellmapi.sh" ] && bash "$HOME/bin/ensure_freellmapi.sh" >/dev/null 2>&1 &'
+        echo '# Auto-start twin on Termux open'
+        echo '[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &'
+    } > "$TMP"
+    mv "$TMP" "$f"
 done
 
-# Re-add in correct order: PATH first, then hooks
-for f in "$HOME/.bashrc" "$HOME/.profile"; do
-    echo '' >> "$f"
-    echo 'export PATH="$HOME/bin:$PATH"' >> "$f"
-    echo '[ -f "$HOME/bin/ensure_freellmapi.sh" ] && bash "$HOME/bin/ensure_freellmapi.sh" >/dev/null 2>&1 &' >> "$f"
-    echo '[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &' >> "$f"
-done
-print_ok "Cleaned and re-added hooks in correct order (PATH → FreeLLMAPI → twin)"
+# Sanity check: confirm PATH is now line 1 of .bashrc. This is
+# the exact line the "command not found" bug was about.
+if [[ -f "$HOME/.bashrc" ]]; then
+    FIRST_LINE=$(head -n 1 "$HOME/.bashrc")
+    if [[ "$FIRST_LINE" == 'export PATH="$HOME/bin:$PATH"' ]]; then
+        print_ok "PATH export is line 1 of ~/.bashrc (twin-start will resolve on first prompt)"
+    else
+        print_warn "Line 1 of ~/.bashrc is: $FIRST_LINE (expected the PATH export)"
+    fi
+fi
+print_ok "Prepended PATH as first line; hooks appended at end (idempotent)"
 
 # ------------------------------------------------------------
 # 9. Set up Termux:Boot auto-start for FreeLLMAPI (if installed)

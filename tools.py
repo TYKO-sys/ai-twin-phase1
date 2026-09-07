@@ -3022,16 +3022,17 @@ def tool_update_knowledge(domain: str, update: str) -> str:
         )
 
         # Enforce the same per-domain character limits as
-        # knowledge_base.py DOMAINS — keeps the KB bounded so the LLM
-        # context window doesn't blow up. If we're over the limit, keep
-        # the most recent content (which includes the just-appended
-        # update) and drop older text.
+        # knowledge_base.py DOMAINS (doubled: total ~8500 chars / ~2100
+        # tokens — well within all provider context windows). Keeps the
+        # KB bounded so the LLM context window doesn't blow up. If we're
+        # over the limit, keep the most recent content (which includes
+        # the just-appended update) and drop older text.
         limits = {
-            "identity.md": 500, "situation.md": 800, "tasks.md": 600,
-            "relationships.md": 500, "patterns.md": 500, "completed.md": 500,
-            "upcoming.md": 500, "insights.md": 400,
+            "identity.md": 1000, "situation.md": 1500, "tasks.md": 1200,
+            "relationships.md": 1000, "patterns.md": 1000, "completed.md": 1000,
+            "upcoming.md": 1000, "insights.md": 800,
         }
-        limit = limits.get(filename, 500)
+        limit = limits.get(filename, 1000)
         if len(new_content) > limit:
             # Keep only the most recent content — the user's just-stated
             # update is more important than older history.

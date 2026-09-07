@@ -51,6 +51,7 @@ NOTES_DIR = Path.home() / "ai-twin-memory" / "notes"
 TASKS_FILE = Path.home() / "ai-twin-memory" / "tasks.json"
 JOURNAL_DIR = Path.home() / "ai-twin-memory" / "journal"
 BANNED_PHRASES_FILE = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
+REMINDERS_FILE = Path.home() / "ai-twin-memory" / "reminders.json"
 
 # Ensure directories exist
 for d in (WORKSPACE_DIR, NOTES_DIR, JOURNAL_DIR):
@@ -751,6 +752,38 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["domain", "update"]
+        }
+    },
+    {
+        "name": "set_reminder",
+        "description": (
+            "Set a reminder for the user. The twin will ping them at or "
+            "after the specified time via Telegram. Use this whenever the "
+            "user says \"remind me\" or asks you to follow up at a specific "
+            "time. Do NOT announce the timing back to the user — just say "
+            "\"got it.\" and call this tool. The reminder is stored in a "
+            "separate reminders.json file (NOT the conversation log), so "
+            "it will fire even after a restart and will not be re-read "
+            "as a stale \"remind you at 3pm\" prompt on the next turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "what": {
+                    "type": "string",
+                    "description": "What to remind the user about"
+                },
+                "when": {
+                    "type": "string",
+                    "description": (
+                        "When to remind, in natural language. Examples: "
+                        "\"in 2 hours\", \"in 30 minutes\", \"in 1 day\", "
+                        "\"at 3pm\", \"at 9:30am\", \"tomorrow morning\", "
+                        "\"tomorrow\", \"morning\", \"tonight\", \"evening\"."
+                    )
+                }
+            },
+            "required": ["what", "when"]
         }
     }
 ]
@@ -3052,6 +3085,127 @@ def tool_update_knowledge(domain: str, update: str) -> str:
         return f"Failed to update knowledge: {type(e).__name__}: {e}"
 
 
+def tool_set_reminder(what: str, when: str) -> str:
+    """Set a reminder for the user. The twin will ping them at or after
+    the specified time via Telegram.
+
+    Args:
+        what: What to remind about
+        when: When to remind (natural language like "in 2 hours",
+              "tomorrow morning", "at 3pm", "in 30 minutes", "tonight")
+
+    FIX (Bug 5) — Reminders are stored in a SEPARATE reminders.json file
+    (NOT the conversation log). This is the key fix for the stale-
+    reminders bug: previously, "I'll remind you at 3pm" got saved to
+    the conversation log / knowledge base, and on reprocessing or even
+    normal turns the twin would repeat "remind you at 3pm" long after
+    3pm had passed. With a separate file, the reminder either fires
+    (marking fired=True) or it doesn't — but it never gets read back as
+    a prompt to repeat the timing.
+
+    Time parsing is intentionally simple: regex-based, no external
+    dependencies. Falls back to "2 hours from now" if parsing fails so
+    the reminder still fires (better than dropping it silently).
+    """
+    try:
+        # Local imports keep the module-import surface small (re/json
+        # are already imported at module level, but the brief calls
+        # them out explicitly here so the function is self-contained).
+        from datetime import datetime, timedelta
+        import re as _re
+
+        now = datetime.now()
+        target_time = None
+
+        # "in X hours/minutes/days"
+        m = _re.match(r'in (\d+) (hours?|minutes?|days?)', when.lower())
+        if m:
+            num = int(m.group(1))
+            unit = m.group(2).rstrip('s')
+            if unit == 'hour':
+                target_time = now + timedelta(hours=num)
+            elif unit == 'minute':
+                target_time = now + timedelta(minutes=num)
+            elif unit == 'day':
+                target_time = now + timedelta(days=num)
+
+        # "at H:MM" or "at H:MM am/pm"
+        if not target_time:
+            m = _re.match(r'at (\d{1,2}):(\d{2})\s*(am|pm)?', when.lower())
+            if m:
+                hour = int(m.group(1))
+                minute = int(m.group(2))
+                ampm = m.group(3)
+                if ampm == 'pm' and hour != 12:
+                    hour += 12
+                if ampm == 'am' and hour == 12:
+                    hour = 0
+                target_time = now.replace(
+                    hour=hour, minute=minute, second=0, microsecond=0
+                )
+                if target_time < now:
+                    target_time += timedelta(days=1)  # Tomorrow
+
+        # "tomorrow morning" / "tomorrow"
+        if not target_time and 'tomorrow' in when.lower():
+            target_time = now + timedelta(days=1)
+            target_time = target_time.replace(
+                hour=9, minute=0, second=0, microsecond=0
+            )
+
+        # "morning" / "tonight" / "evening"
+        if not target_time:
+            if 'morning' in when.lower():
+                target_time = now.replace(
+                    hour=9, minute=0, second=0, microsecond=0
+                )
+                if target_time < now:
+                    target_time += timedelta(days=1)
+            elif 'evening' in when.lower() or 'tonight' in when.lower():
+                target_time = now.replace(
+                    hour=18, minute=0, second=0, microsecond=0
+                )
+                if target_time < now:
+                    target_time += timedelta(days=1)
+
+        # Fallback: 2 hours from now (better to fire late-but-soon than
+        # to silently drop the reminder because we couldn't parse it).
+        if not target_time:
+            target_time = now + timedelta(hours=2)
+
+        # Save to reminders file (separate from conversation log — this
+        # is the whole point of the fix; see docstring).
+        reminders = []
+        if REMINDERS_FILE.exists():
+            try:
+                reminders = json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
+                if not isinstance(reminders, list):
+                    reminders = []
+            except Exception:
+                reminders = []
+
+        reminder = {
+            "what": what,
+            "when_iso": target_time.isoformat(),
+            "when_display": target_time.strftime("%a %I:%M %p"),
+            "created": now.isoformat(),
+            "fired": False,
+        }
+        reminders.append(reminder)
+        try:
+            REMINDERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        REMINDERS_FILE.write_text(
+            json.dumps(reminders, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        return f"Reminder set for {target_time.strftime('%a %I:%M %p')}: {what}"
+    except Exception as e:
+        return f"Failed to set reminder: {e}"
+
+
 # ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
@@ -3107,6 +3261,7 @@ _TOOL_FUNCTIONS = {
     "list_banned_phrases": tool_list_banned_phrases,
     "remove_banned_phrase": tool_remove_banned_phrase,
     "update_knowledge": tool_update_knowledge,
+    "set_reminder": tool_set_reminder,
 }
 
 

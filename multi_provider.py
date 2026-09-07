@@ -484,6 +484,18 @@ class MultiProviderClient:
         understanding (system + knowledge base + today's messages) live in
         the prompt itself, so they survive the failover. Tool-call history
         from earlier iterations is lost — accepted trade-off vs. failing.
+
+        FIX (Bug 3) — Last-resort fallback. If EVERY provider fails in
+        the tool loop (all rate-limited, all timed out, all keys dead),
+        we try ONE MORE TIME with a plain generate() call (no tools)
+        against every provider. Many rate-limit responses specifically
+        block tool calls but allow plain completions; many "all keys
+        dead" cases are actually one key dead and the others fine for
+        simple generation. Only if BOTH the tool loop AND the simple
+        generate fail across all providers do we return the unavailable
+        string (which causes handle_text to save the message to the
+        unanswered queue). This is what makes FreeLLMAPI rate-limits
+        non-fatal when the other providers have working keys.
         """
         order = list(self.providers)
         if self._last_good_provider:
@@ -540,4 +552,41 @@ class MultiProviderClient:
 
         if last_error:
             log.error(f"All providers failed in generate_with_tools. Last error: {last_error}")
+
+        # FIX (Bug 3) — Last resort: try a simple generate() without
+        # tools against every provider. Tool calls are the most common
+        # reason for a provider to rate-limit or 429 — many rate-limit
+        # responses specifically block tool calls but allow plain
+        # completions. If the user's message could be answered without
+        # tools (most can), this saves the turn instead of queueing it.
+        log.warning("All providers failed in tool loop. Trying simple generate without tools...")
+        for name, client in order:
+            # Skip providers still in cooldown
+            if hasattr(client, "is_available") and not client.is_available():
+                continue
+            try:
+                result = client.generate(
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                )
+            except Exception as e:
+                log.warning(
+                    f"Provider {name} raised in last-resort generate: "
+                    f"{type(e).__name__}: {e}. Continuing."
+                )
+                if hasattr(client, "mark_failed"):
+                    try:
+                        client.mark_failed()
+                    except Exception:
+                        pass
+                continue
+            if result and result.strip() and not result.startswith("("):
+                self._last_good_provider = name
+                log.info(
+                    f"Provider {name} succeeded with simple generate (no tools) "
+                    f"({len(result)} chars) — saved turn after tool-loop failover"
+                )
+                return result
+            # Else continue to next provider
+
         return "(All AI providers are unavailable. Check your API keys and try again in a minute.)"

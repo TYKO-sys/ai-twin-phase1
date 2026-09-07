@@ -1704,6 +1704,17 @@ def _proactive_messaging_loop_smart():
             now = datetime.now()
             now_ts = time.time()
 
+            # FIX 6 (Bug 5) — Always check reminders, regardless of quiet
+            # hours / daily cap / recent user activity. The user explicitly
+            # asked to be pinged at a specific time, so we honor that even
+            # if it's 11pm or they just messaged. Idempotent (fired
+            # reminders are marked in place), so calling every 15min is
+            # cheap. The actual ping only happens once per reminder.
+            try:
+                _check_reminders()
+            except Exception as re_err:
+                log.error(f"Reminder check error in proactive loop: {re_err}")
+
             # Reset daily counter at midnight
             if _proactive_last_reset_date != now.date():
                 _proactive_sent_today = 0
@@ -2484,7 +2495,8 @@ def _save_to_unanswered_queue(text: str):
 
 
 def _process_unanswered_queue():
-    """On startup, process any unanswered messages from the queue.
+    """On startup (delayed by 10s — see main()), process any unanswered
+    messages from the queue.
 
     Loads ~/ai-twin-memory/unanswered_queue.json, clears the file FIRST
     (so we don't reprocess the same messages if processing crashes the
@@ -2492,9 +2504,37 @@ def _process_unanswered_queue():
     (all providers still unavailable), the message is re-saved to the
     queue so it survives the next restart too.
 
-    Called from main() after _wait_for_freellmapi() and before polling
-    starts, so there is no concurrency with message handlers — no lock
-    needed here.
+    FIX 1 (Bug 1) — Time awareness. Each queued item has a `timestamp`
+    field. Messages older than 30 minutes are SKIPPED (context is too
+    stale — the LLM would generate responses referencing times/dates
+    that have already passed, e.g. "remind you at 3pm" when it's now
+    5pm). Stale messages are logged but not reprocessed and not re-queued.
+
+    FIX 2 (Bug 1) — When reprocessing a recent (<30min) message, the
+    prompt tells the LLM the original send time and the current time,
+    so it can acknowledge that any time references in the message are
+    now in the past and move on instead of acting on stale timing.
+
+    FIX 3 (Bug 2) — DO NOT log reprocessed messages to cm.append_to_today.
+    The user message was already logged when it was first received
+    (the queue is the LAST-RESORT path after a normal attempt failed
+    mid-response — see handle_text). Logging the user message AGAIN
+    causes the conversation log to contain it twice, which causes the
+    LLM to see it twice on the next normal turn and generate the same
+    response twice. Likewise, do NOT log the twin's reprocessed reply
+    to cm — the conversation log should only contain INTERACTIVE
+    messages, not queue reprocessing. Just send the reply directly.
+
+    FIX 4 (Bug 4) — This function is no longer called before polling
+    starts. It runs in a background thread 10s after polling starts so
+    the twin is already responding to current user messages. See main()
+    for the delayed-thread launch.
+
+    Thread-safety: cm.append_to_today is safe to call from any thread
+    (file I/O only). _send_fragmented_reply is thread-safe. The only
+    shared mutable state is _fragment_send_interrupted, which is reset
+    at the top of _send_fragmented_reply, so concurrent calls don't
+    step on each other.
     """
     try:
         queue_path = Path.home() / "ai-twin-memory" / "unanswered_queue.json"
@@ -2522,31 +2562,83 @@ def _process_unanswered_queue():
         except Exception as e:
             log.error(f"Could not clear unanswered queue file: {e}")
 
+        now = datetime.now()
+        # FIX 1 (Bug 1) — Skip stale messages. 30 minutes is the cutoff:
+        # long enough that a short FreeLLMAPI outage + restart still gets
+        # reprocessed, short enough that a 2-hour-old "remind me at 3pm"
+        # message doesn't get a stale "remind you at 3pm" response at 5pm.
+        STALE_CUTOFF_SECONDS = 30 * 60
+
         for item in queue:
             if not isinstance(item, dict):
                 continue
             text = (item.get("text") or "").strip()
             if not text:
                 continue
+
+            # FIX 1 (Bug 1) — Check timestamp; skip stale messages entirely.
+            original_time = item.get("timestamp", "")
+            if original_time:
+                try:
+                    sent_at = datetime.fromisoformat(original_time)
+                    age_seconds = (now - sent_at).total_seconds()
+                    if age_seconds > STALE_CUTOFF_SECONDS:
+                        log.info(
+                            f"Skipping stale queued message from "
+                            f"{original_time} (age {age_seconds/60:.0f}min, "
+                            f"cutoff {STALE_CUTOFF_SECONDS/60:.0f}min): "
+                            f"{text[:50]}..."
+                        )
+                        continue
+                except Exception as te:
+                    # Malformed timestamp — fall through and try to
+                    # reprocess anyway. Better to attempt than to drop
+                    # a message we can't date.
+                    log.warning(
+                        f"Could not parse queued message timestamp "
+                        f"'{original_time}': {te}. Reprocessing anyway."
+                    )
+
             log.info(f"Reprocessing unanswered message: {text[:50]}...")
             # Short delay between reprocessing so we don't hammer the
             # LLM provider that just came back online.
             time.sleep(2)
             try:
-                # Log it as a user message so the conversation record
-                # includes it (wasn't logged the first time around
-                # because we never got far enough to send a reply).
-                cm.append_to_today(
-                    "user", text,
-                    observation="reprocessed from unanswered queue",
-                )
-                prompt = _build_gemini_prompt(text)
+                # FIX 2 (Bug 1) — Add a time-awareness note to the prompt
+                # telling the LLM the original send time and the current
+                # time. If any time references in the message are now in
+                # the past, the LLM should acknowledge that and move on.
+                if original_time:
+                    annotated_text = (
+                        f"[This message was originally sent at "
+                        f"{original_time} but couldn't be processed at "
+                        f"the time. The current time is "
+                        f"{now.strftime('%Y-%m-%d %H:%M')}. "
+                        f"If any time references in the message are now "
+                        f"in the past, acknowledge that and move on.]\n\n"
+                        f"{text}"
+                    )
+                else:
+                    annotated_text = (
+                        f"[This message couldn't be processed at the "
+                        f"time. The current time is "
+                        f"{now.strftime('%Y-%m-%d %H:%M')}. If any time "
+                        f"references in the message are now in the past, "
+                        f"acknowledge that and move on.]\n\n"
+                        f"{text}"
+                    )
+
+                # FIX 3 (Bug 2) — DO NOT call cm.append_to_today here.
+                # The user message was already logged when it was first
+                # received. Re-logging it causes the next normal turn to
+                # see it twice and generate the same response twice.
+                prompt = _build_gemini_prompt(annotated_text)
                 reply = _call_gemini(prompt) + _footer()
                 if reply and "All AI providers are unavailable" not in reply:
-                    cm.append_to_today(
-                        "twin", reply,
-                        observation="reprocessed unanswered message",
-                    )
+                    # FIX 4 (Bug 2) — DO NOT log the twin's reprocessed
+                    # reply to cm either. The conversation log should
+                    # contain INTERACTIVE messages only. Just send the
+                    # reply directly.
                     _send_fragmented_reply(reply)
                     log.info("Reprocessed unanswered message successfully.")
                 else:
@@ -2558,6 +2650,81 @@ def _process_unanswered_queue():
                 _save_to_unanswered_queue(text)
     except Exception as e:
         log.error(f"Error processing unanswered queue: {e}")
+
+
+def _check_reminders():
+    """Check ~/ai-twin-memory/reminders.json for due reminders and ping
+    the user via Telegram. Marks fired reminders in place.
+
+    Reminders are written by the `set_reminder` tool (tools.py). Each
+    entry is {what, when_iso, when_display, created, fired}. A reminder
+    is "due" when now >= when_iso. We ping the user once and set
+    `fired: True` so we never ping twice for the same reminder.
+
+    If the twin was offline when the reminder was due (now - when_iso
+    > 5 minutes), we acknowledge that in the message so the user knows
+    why it's late — instead of pretending it just fired on time.
+
+    Called from the proactive messaging loop (_proactive_messaging_loop_smart)
+    every 15 minutes alongside the existing opportunity scoring. Cheap
+    and idempotent — safe to call more often.
+    """
+    try:
+        reminders_path = Path.home() / "ai-twin-memory" / "reminders.json"
+        if not reminders_path.exists():
+            return
+        try:
+            reminders = json.loads(reminders_path.read_text(encoding="utf-8"))
+        except Exception:
+            log.warning("reminders.json is corrupt — ignoring it.")
+            return
+        if not isinstance(reminders, list) or not reminders:
+            return
+
+        now = datetime.now()
+        changed = False
+        for r in reminders:
+            if not isinstance(r, dict) or r.get("fired"):
+                continue
+            when_iso = r.get("when_iso", "")
+            if not when_iso:
+                continue
+            try:
+                when = datetime.fromisoformat(when_iso)
+            except Exception:
+                log.warning(
+                    f"reminders.json entry has bad when_iso '{when_iso}' — skipping"
+                )
+                continue
+            if now >= when:
+                # Reminder is due — ping the user.
+                what = r.get("what", "(no content)")
+                # If the twin was offline when the reminder was due (the
+                # reminder time passed >5 minutes ago), acknowledge the
+                # lateness. Otherwise send it as if on time.
+                late_seconds = (now - when).total_seconds()
+                was_offline = late_seconds > 300  # >5 min late
+                if was_offline:
+                    msg = (
+                        f"hey — you asked me to remind you about {what}. "
+                        f"i was offline when it was due, but here it is."
+                    )
+                else:
+                    msg = f"hey — {what}."
+                _send_telegram_message(ALLOWED_USER_ID, msg)
+                r["fired"] = True
+                changed = True
+                log.info(f"Fired reminder: {what}")
+        if changed:
+            try:
+                reminders_path.write_text(
+                    json.dumps(reminders, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as we:
+                log.error(f"Failed to persist fired reminders: {we}")
+    except Exception as e:
+        log.error(f"Reminder check failed: {e}")
 
 
 # ---------------------------------------------------------------------- #
@@ -3540,14 +3707,28 @@ def main() -> None:
     _wait_for_freellmapi(timeout_seconds=60)
 
     # FEATURE 1 — Reprocess any messages the twin couldn't answer before
-    # the last restart (every LLM provider was down). This runs BEFORE
-    # polling starts so there is no concurrency with message handlers.
-    # Messages that still can't be answered (providers still down) get
-    # re-saved to the queue for the NEXT restart.
-    try:
-        _process_unanswered_queue()
-    except Exception as e:
-        log.error(f"Unanswered queue processing failed at startup: {e}")
+    # the last restart (every LLM provider was down). This USED to run
+    # BEFORE polling started, which caused the "weird first 2 responses"
+    # bug: the first 2 replies after restart were to OLD queued messages
+    # from hours ago, not to whatever the user was currently typing.
+    #
+    # FIX 5 (Bug 4) — Now we run it in a background thread 10s AFTER
+    # polling starts. The twin is already responding to new messages by
+    # then, so old queue reprocessing happens in parallel without
+    # blocking the live conversation. Time-aware reprocessing (Fix 1)
+    # means stale messages are skipped, so even if this fires after the
+    # user has already moved on, it won't spam them with stale "remind
+    # you at 3pm" responses.
+    def _delayed_queue_processing():
+        time.sleep(10)
+        try:
+            _process_unanswered_queue()
+        except Exception as e:
+            log.error(f"Delayed queue processing failed: {e}")
+
+    queue_thread = threading.Thread(target=_delayed_queue_processing, daemon=True)
+    queue_thread.start()
+    log.info("Delayed unanswered-queue processing thread started (fires in 10s)")
 
     # FIX 3 (Part A) — Lightweight update check: fetch ONLY the latest
     # commit SHA from the GitHub API (1 HTTP GET, ~1 KB response) and

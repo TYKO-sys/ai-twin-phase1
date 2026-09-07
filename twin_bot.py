@@ -241,14 +241,13 @@ _im_here_reset_date = None
 # Initialize bot — HTML mode for rich text formatting.
 # All LLM responses (which are Markdown) get converted to Telegram HTML
 # before sending. This gives the user bold, italic, code blocks, links, etc.
-# timeout=15 sets the default HTTP timeout (in seconds) for ALL Telegram
-# API requests made through this bot instance (send_message, getUpdates,
-# etc.). Previously the bot would hang for 60 seconds on a stalled send
-# before giving up; 15s gives faster failure + retry. Note: this also
-# bounds the getUpdates long-poll HTTP request, so long_polling_timeout
-# in infinity_polling() below is set to 5 (well under 15) to keep
-# polling functional.
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML", timeout=15)
+# NOTE: Do NOT pass `timeout=` to the TeleBot() constructor —
+# pyTelegramBotAPI does not accept it and raises
+# TypeError: __init__() got an unexpected keyword argument 'timeout',
+# which crashes the bot on startup and causes an infinite restart loop.
+# Per-request HTTP timeouts belong on send_message(timeout=...); the
+# getUpdates long-poll HTTP timeout belongs on infinity_polling(timeout=...).
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------- #
@@ -3607,16 +3606,23 @@ def main() -> None:
     # long-polling connections periodically (ConnectionAbortedError 103).
     # AdGuard toggling also kills all connections for 15-30 seconds.
     # We wait for network to return before reconnecting.
+    # Exponential backoff for the crash-restart loop: 5s, 10s, 20s, 40s,
+    # max 60s. Prevents a rapid crash loop (e.g. from a bad constructor
+    # kwarg) from burning CPU in a tight restart loop. Reset to 5s on a
+    # clean exit of infinity_polling (which under normal operation blocks
+    # indefinitely and only returns by raising).
+    restart_delay = 5
     while True:
         try:
             bot.infinity_polling(
                 skip_pending=False,
                 timeout=15,
-                long_polling_timeout=5,
+                long_polling_timeout=30,
                 # Don't let telebot's internal error handler swallow crashes
                 # that we want to catch and retry
                 logger_level=None,
             )
+            restart_delay = 5  # Reset on clean exit
         except KeyboardInterrupt:
             log.info("Bot stopped by user.")
             break
@@ -3630,8 +3636,8 @@ def main() -> None:
             )
             # Wait for network to come back (up to 90 seconds)
             if _wait_for_network(max_wait=90):
-                log.info("Network is back. Reconnecting in 5 seconds...")
-                time.sleep(5)
+                log.info(f"Network is back. Reconnecting in {restart_delay}s...")
+                time.sleep(restart_delay)
             else:
                 log.warning(
                     f"Network still down after 90s. "
@@ -3640,8 +3646,10 @@ def main() -> None:
                 # Keep trying indefinitely — the bot should never give up
                 while not _wait_for_network(max_wait=30):
                     log.warning("Still no network. Retrying in 30s...")
-                log.info("Network finally back. Reconnecting...")
-                time.sleep(5)
+                log.info(f"Network finally back. Reconnecting in {restart_delay}s...")
+                time.sleep(restart_delay)
+            # Exponential backoff so rapid crash loops don't burn CPU
+            restart_delay = min(restart_delay * 2, 60)
             continue
 
 

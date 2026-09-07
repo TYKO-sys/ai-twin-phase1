@@ -154,8 +154,9 @@ fi
 # 3.7. Verify FreeLLMAPI connection
 # ------------------------------------------------------------
 print_step "Step 3.7: Verify FreeLLMAPI connection"
+{
 sleep 5  # Give FreeLLMAPI time to start
-FLM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
+FLM_STATUS=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
 if [[ "$FLM_STATUS" == "200" ]]; then
     print_ok "FreeLLMAPI is responding (HTTP 200)"
 elif [[ "$FLM_STATUS" == "401" ]]; then
@@ -166,7 +167,7 @@ elif [[ "$FLM_STATUS" == "000" ]]; then
     print_warn "FreeLLMAPI is not responding — starting it now"
     tmux new-session -d -s freellmapi ~/freellmapi-run.sh 2>/dev/null || true
     sleep 15
-    FLM_RETRY=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
+    FLM_RETRY=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" http://localhost:3001/v1/models 2>/dev/null)
     if [[ "$FLM_RETRY" == "200" ]]; then
         print_ok "FreeLLMAPI started successfully"
     else
@@ -175,6 +176,7 @@ elif [[ "$FLM_STATUS" == "000" ]]; then
 else
     print_warn "FreeLLMAPI returned HTTP $FLM_STATUS"
 fi
+} || true
 
 # ------------------------------------------------------------
 # 4. Update voice profile from latest template

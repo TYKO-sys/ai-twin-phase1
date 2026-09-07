@@ -129,11 +129,65 @@ USE_OPENROUTER = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
 # Backward compatibility: keep gemini_client as an alias
 gemini_client = llm_client
 
-# Read the base system prompt
-with open(Path(__file__).parent / "system_prompt.txt", "r", encoding="utf-8") as f:
-    _base_prompt = f.read()
+# ====================================================================
+# MODULAR PROMPT SYSTEM — Each call type gets only the context it needs
+# ====================================================================
+# Different LLM calls need different system instructions. The interactive
+# conversation needs the full personality + tools + crisis rules. A
+# proactive 1-sentence check-in doesn't need any of that — it just needs
+# "you are the twin, write like a friend texting." Loading the full
+# SYSTEM_PROMPT for every call wastes tokens, dilutes focus, and makes
+# the LLM more likely to add tool-call preamble or "as an AI" hedges.
+#
+# Frameworks:
+#   - T-B-R (Task – Background – Requirements):  CORE_PERSONALITY,
+#                                                 PROACTIVE_PERSONALITY
+#   - Role + Core Instructions:                  KB_UPDATER,
+#                                                 DIGEST_PERSONALITY
 
-# Build the voice profile block (goes at the TOP for primacy bias)
+# 1. CORE_PERSONALITY — interactive conversation (T-B-R)
+# Task:         respond to the user as their twin
+# Background:   they have ADHD, need decisions made for them, need a friend
+# Requirements: match energy, decide don't ask, call tools, stay on topic
+# Loaded from system_prompt.txt so the user can edit it without touching code.
+with open(Path(__file__).parent / "system_prompt.txt", "r", encoding="utf-8") as f:
+    _CORE_PERSONALITY = f.read()
+
+# 2. PROACTIVE_PERSONALITY — proactive messages, silence check-ins,
+#    appointment reminders, daily morning check-in.
+# Same personality but NO tools (these are short outbound messages — no
+# tool calls are ever made from these paths, so tool rules are dead weight).
+# T-B-R with simplified requirements.
+_PROACTIVE_PERSONALITY = """You are the user's AI twin. You're reaching out proactively.
+
+Write like a friend texting. Short, casual, lowercase, contractions. No AI-speak. No "how are you." No "just checking in." Reference something specific.
+
+Match the user's voice: casual profanity ok, "shit" used casually, "lmfao", "kinda", "gonna". Heavy contractions. No greeting, no sign-off.
+
+If it's a weekend (Saturday/Sunday), don't suggest calling offices. If a time reference in the context is in the past, acknowledge it and move on.
+
+One message. 1-3 sentences. Don't ask what to do. Don't ask "want me to..." Just say the thing.
+"""
+
+# 3. KB_UPDATER — knowledge base domain updates.
+# Role + Core Instructions framework. NO personality rules, NO tool
+# instructions — just accuracy and brevity.
+# NOTE: knowledge_base.py uses its OWN hard-coded system_instruction
+# for update / compress calls, so this constant is here for
+# documentation and architectural completeness (callers may pass it,
+# but kb.update_all ignores the passed value and uses its own).
+_KB_UPDATER = """You are updating your own knowledge of someone you know well. Be accurate, specific, honest, and brief. Write in second person ("You are..."). Remove outdated information. Keep only current, active facts. Stay under the character limit.
+"""
+
+# 4. DIGEST_PERSONALITY — daily news digest.
+# Role + Core Instructions framework. Short outbound summary, no tools,
+# no headers, no links — just a friend texting the news.
+_DIGEST_PERSONALITY = """You summarize news for a friend. Read the RSS items. Pick the 3-5 most relevant to the user's life (Baltimore, medical, Apple, AI tools, legal). Write one message, 4-6 sentences, like a friend texting. NO URLs. NO headers. NO bullet points. End with one optional question.
+"""
+
+# Build the voice profile block (goes at the TOP for primacy bias).
+# Loaded from ~/ai-twin-memory/voice_profile.md if the user has set one;
+# otherwise falls back to a short default voice spec.
 _voice_block = ""
 _voice_path = Path.home() / "ai-twin-memory" / "voice_profile.md"
 if _voice_path.exists():
@@ -160,7 +214,8 @@ else:
         "no greetings or sign-offs.\n\n"
     )
 
-# Build the kill file block (goes right after the voice profile)
+# Build the kill file block (goes right after the voice profile).
+# Loaded from ~/ai-twin-memory/banned_phrases.txt if present.
 _kill_block = ""
 _kill_path = Path.home() / "ai-twin-memory" / "banned_phrases.txt"
 if _kill_path.exists():
@@ -172,17 +227,14 @@ if _kill_path.exists():
         )
         log.info(f"Loaded kill file from {_kill_path}")
 
-# Build the final check block (goes at the BOTTOM for recency bias)
-_final_check = """
-### FINAL CHECK BEFORE EVERY MESSAGE
-
-Before you send any message to the user, re-read it. Does it sound like YOUR VOICE (the voice profile above)? If it sounds like a chatbot, an AI assistant, a helpful robot, a customer service agent, or anything other than a friend texting a friend — REWRITE IT.
-
-The voice profile is not a suggestion. It is how you talk. Every message. No exceptions. If you can't tell whether it sounds right, read it out loud — if it sounds like something you'd never text a friend, it's wrong.
-"""
-
-# Assemble: voice profile (primacy) + kill file + base prompt + final check (recency)
-SYSTEM_PROMPT = _voice_block + _kill_block + _base_prompt + _final_check
+# Assemble the INTERACTIVE system prompt.
+# Used ONLY for handle_text / _call_gemini — interactive turns where the
+# twin needs the full personality + tool rules + crisis protocol + the
+# user's voice profile + their personal kill file.
+# All other call types (proactive, reminders, check-ins, digest) use the
+# modular prompts above directly — they don't get the voice block, the
+# kill file, or the tool rules, because they don't need them.
+SYSTEM_PROMPT = _voice_block + _kill_block + _CORE_PERSONALITY
 
 # Track which memory files were used in the last response (for footer)
 _last_context_files: list[str] = []
@@ -2229,7 +2281,7 @@ Write the message:"""
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=_PROACTIVE_PERSONALITY,
         )
         msg = (response or "").strip()
         if msg:
@@ -2361,7 +2413,7 @@ def _send_proactive_reminder(event_text: str, hours_until: float, urgent: bool):
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=_PROACTIVE_PERSONALITY,
         )
 
         if response and len(response) > 5:
@@ -2430,7 +2482,7 @@ Write the message now (in TYKO's voice — short, casual, lowercase, contraction
 
         response = llm_client.generate(
             prompt=prompt,
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=_PROACTIVE_PERSONALITY,
         )
         msg = (response or "").strip()
         if msg:
@@ -3079,11 +3131,11 @@ RSS ITEMS:
 
 Your text:"""
 
-            # All automated LLM calls now use the full SYSTEM_PROMPT so the
-            # 25+ voice rules apply to every outbound message, not just the
-            # interactive conversation path. Same constant for all three
-            # fallbacks (generate / generate_text / generate_with_tools).
-            digest_system = SYSTEM_PROMPT
+            # Digest uses its own modular system instruction (DIGEST_PERSONALITY):
+            # a short Role + Core Instructions block, no personality rules, no
+            # tools, no voice profile. Same constant for all three fallbacks
+            # (generate / generate_text / generate_with_tools).
+            digest_system = _DIGEST_PERSONALITY
 
             digest_text = None
             # Preferred: plain-text generate() (no tool loop needed for a digest)
@@ -3213,7 +3265,7 @@ Write the message now:"""
             try:
                 response = llm_client.generate(
                     prompt=prompt,
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=_PROACTIVE_PERSONALITY,
                 )
                 msg = (response or "").strip()
                 if msg:

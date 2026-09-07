@@ -183,6 +183,37 @@ pip install --break-system-packages -q lxml 2>&1 | tail -1
 print_ok "lxml installed (for scrape_website tool)"
 
 # ------------------------------------------------------------
+# 7.5. Run keep_alive_setup.sh (creates twin-start, twin-stop, twin-logs, twin-status + PATH setup)
+# ------------------------------------------------------------
+# This is what installs the ~/bin/twin-start command. Without this step,
+# `twin-start` does not exist and the user sees "twin-start: command not found"
+# on Termux open. keep_alive_setup.sh also adds ~/bin to PATH in .bashrc/.profile.
+print_step "Step 7.5: Run keep_alive_setup.sh (installs twin-start command + PATH)"
+
+if [[ -f ~/ai-twin/keep_alive_setup.sh ]]; then
+    # Run in a subshell so its `set -e` doesn't kill this script if pkg install hiccups
+    if bash ~/ai-twin/keep_alive_setup.sh; then
+        print_ok "keep_alive_setup.sh completed"
+    else
+        print_warn "keep_alive_setup.sh exited non-zero (continuing anyway — ensure_twin.sh hook will still work)"
+    fi
+    # Export PATH for THIS script session so `twin-start` (Step 12) works
+    export PATH="$HOME/bin:$PATH"
+    # Verify the twin-start command was actually created
+    if [[ -x "$HOME/bin/twin-start" ]]; then
+        print_ok "Verified: ~/bin/twin-start exists and is executable"
+    else
+        print_warn "~/bin/twin-start was NOT created — twin-start command will not work"
+        print_warn "Run manually later:  bash ~/ai-twin/keep_alive_setup.sh"
+    fi
+else
+    print_warn "keep_alive_setup.sh not found at ~/ai-twin/keep_alive_setup.sh"
+    print_warn "twin-start command may not be installed — auto-start hook will fall back to direct tmux launch"
+    # Still make sure ~/bin is in PATH for this session
+    export PATH="$HOME/bin:$PATH"
+fi
+
+# ------------------------------------------------------------
 # 8. Set up Termux:Boot auto-start for the twin
 # ------------------------------------------------------------
 print_step "Step 8: Termux:Boot auto-start for twin"
@@ -296,6 +327,19 @@ print_step "Step 8.6: Termux startup hook for the AI Twin"
 # Copy the ensure_twin script to ~/bin/
 cp ~/ai-twin/ensure_twin.sh ~/bin/ensure_twin.sh 2>/dev/null || true
 chmod +x ~/bin/ensure_twin.sh 2>/dev/null || true
+
+# Make sure ~/bin is in PATH (in .bashrc) — without this, `twin-start`
+# (and the ensure_twin.sh fallback that calls it) can't be found on Termux open.
+if ! grep -q 'HOME/bin' "$BASHRC" 2>/dev/null; then
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$BASHRC"
+    print_ok "Added ~/bin to PATH in .bashrc"
+fi
+
+# Also add to .profile
+if ! grep -q 'HOME/bin' "$PROFILE" 2>/dev/null; then
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$PROFILE" 2>/dev/null || true
+    print_ok "Added ~/bin to PATH in .profile"
+fi
 
 # Add to .bashrc if not already there
 TWIN_HOOK_LINE='[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &'

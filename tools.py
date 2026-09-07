@@ -723,6 +723,35 @@ TOOL_DEFINITIONS = [
             },
             "required": ["phrase"]
         }
+    },
+    {
+        "name": "update_knowledge",
+        "description": (
+            "Update a knowledge base domain immediately when the user "
+            "tells you something changed (task completed, rescheduled, "
+            "new appointment, situation change). Don't wait for the "
+            "background refresh — update NOW so the next response has "
+            "correct info. Without this call, the knowledge base stays "
+            "stale until the next scheduled refresh and the twin may "
+            "repeat old information."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": (
+                        "One of: identity, situation, tasks, relationships, "
+                        "patterns, completed, upcoming, insights"
+                    )
+                },
+                "update": {
+                    "type": "string",
+                    "description": "The updated information for this domain"
+                }
+            },
+            "required": ["domain", "update"]
+        }
     }
 ]
 
@@ -2910,6 +2939,118 @@ def tool_remove_banned_phrase(phrase: str) -> str:
     return f"'{phrase}' isn't in the kill file."
 
 
+def tool_update_knowledge(domain: str, update: str) -> str:
+    """Update a knowledge base domain immediately.
+
+    BUG 2 FIX — Use this when the user tells you something that changes
+    the current state. The background incremental KB refresh only runs
+    every ~3 messages, so between refreshes the knowledge base is
+    STALE: if the user says "probation meeting rescheduled to tomorrow"
+    and the twin just acknowledges without writing to the KB, the next
+    response reads the stale KB and repeats the old "Monday 11:30" info.
+
+    Trigger cases (per voice_profile_template.md Rule 26 update):
+    - Task completed → update completed.md (and call complete_task)
+    - Task rescheduled → update upcoming.md
+    - New appointment → update upcoming.md
+    - Situation changed → update situation.md
+
+    Args:
+        domain: One of: identity, situation, tasks, relationships,
+                patterns, completed, upcoming, insights
+        update: The updated information for this domain
+
+    Returns:
+        A status string describing what was written and the new file
+        size, or an error message on failure / unknown domain.
+    """
+    try:
+        # Map domain names to filenames. We accept the short form
+        # ("upcoming") instead of the filename ("upcoming.md") so the
+        # LLM has less to remember and the tool call reads naturally.
+        domain_map = {
+            "identity": "identity.md",
+            "situation": "situation.md",
+            "tasks": "tasks.md",
+            "relationships": "relationships.md",
+            "patterns": "patterns.md",
+            "completed": "completed.md",
+            "upcoming": "upcoming.md",
+            "insights": "insights.md",
+        }
+
+        # Be lenient on the input — strip whitespace and lowercase so
+        # "Upcoming" / " upcoming " / "upcoming.md" all work.
+        normalized = domain.lower().strip()
+        # If the LLM passed "upcoming.md", strip the suffix.
+        if normalized.endswith(".md"):
+            normalized = normalized[:-3]
+        filename = domain_map.get(normalized)
+        if not filename:
+            return (
+                f"Unknown domain '{domain}'. Valid domains: "
+                f"{', '.join(domain_map.keys())}"
+            )
+
+        # Knowledge base lives in ~/ai-twin-memory/knowledge/ — this
+        # matches knowledge_base.py's KB_DIR constant.
+        kb_dir = Path.home() / "ai-twin-memory" / "knowledge"
+        kb_dir.mkdir(parents=True, exist_ok=True)
+        kb_path = kb_dir / filename
+
+        # Read current content (so we can APPEND rather than overwrite —
+        # the background knowledge_base.py refresh does a full overwrite,
+        # but this tool is for surgical "the user just told me X changed"
+        # updates that should ADD a dated note the next refresh can
+        # consolidate).
+        current = ""
+        if kb_path.exists():
+            try:
+                current = kb_path.read_text(encoding="utf-8")
+            except Exception:
+                # If we can't read it, treat as empty — better to write
+                # the update than to fail entirely.
+                current = ""
+
+        # Append the update as a dated note rather than overwriting.
+        # The next background refresh will see this note and fold it
+        # into the structured domain content.
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        new_content = (
+            current.rstrip() + "\n\n"
+            + f"[Updated {timestamp}]: {update.strip()}\n"
+        )
+
+        # Enforce the same per-domain character limits as
+        # knowledge_base.py DOMAINS — keeps the KB bounded so the LLM
+        # context window doesn't blow up. If we're over the limit, keep
+        # the most recent content (which includes the just-appended
+        # update) and drop older text.
+        limits = {
+            "identity.md": 500, "situation.md": 800, "tasks.md": 600,
+            "relationships.md": 500, "patterns.md": 500, "completed.md": 500,
+            "upcoming.md": 500, "insights.md": 400,
+        }
+        limit = limits.get(filename, 500)
+        if len(new_content) > limit:
+            # Keep only the most recent content — the user's just-stated
+            # update is more important than older history.
+            new_content = new_content[-limit:]
+
+        kb_path.write_text(new_content, encoding="utf-8")
+        return (
+            f"Updated {normalized} ({filename}). "
+            f"New content: {len(new_content)} chars "
+            f"(limit {limit})."
+        )
+    except Exception as e:
+        # Return a descriptive error string (not raise) — the tool
+        # executor wraps non-str returns as JSON, but the LLM only
+        # needs a short human-readable failure message to know the
+        # update didn't go through.
+        return f"Failed to update knowledge: {type(e).__name__}: {e}"
+
+
 # ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
@@ -2964,6 +3105,7 @@ _TOOL_FUNCTIONS = {
     "add_banned_phrase": tool_add_banned_phrase,
     "list_banned_phrases": tool_list_banned_phrases,
     "remove_banned_phrase": tool_remove_banned_phrase,
+    "update_knowledge": tool_update_knowledge,
 }
 
 

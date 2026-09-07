@@ -263,6 +263,13 @@ def _build_gemini_prompt(user_text: str) -> str:
     The knowledge base provides STRUCTURED UNDERSTANDING (not raw logs).
     Today's conversation provides immediate context (flow).
     The user's message is the new input.
+
+    BUG 1 FIX — Explicitly extract the twin's LAST response so the LLM
+    sees what it just said, making it less likely to repeat itself. The
+    full context already includes today's messages, but adding an
+    explicit "YOUR LAST MESSAGE (DON'T REPEAT)" block at the top of the
+    prompt makes the LLM more aware of what it just said — so a "what
+    else?" follow-up doesn't echo the same probation-meeting reminder.
     """
     global _last_context_files
     _last_context_files = []
@@ -274,19 +281,113 @@ def _build_gemini_prompt(user_text: str) -> str:
     # Today's conversation for immediate flow
     context = cm.build_context_for_response()
 
+    # BUG 1 FIX — Explicitly pull the twin's last response out of today's
+    # log and surface it as a separate labelled block. This is belt-and-
+    # suspenders: even if the LLM doesn't read the full conversation
+    # context closely, it will see "YOUR LAST MESSAGE" at the top and
+    # know not to repeat it.
+    last_twin_msg = ""
+    try:
+        today_log = cm.get_today_context()
+        if today_log:
+            # Find all "## HH:MM — twin" blocks; the last one is what we
+            # just said. The regex captures everything from the header
+            # line up to the next header line or end of string.
+            twin_blocks = re.findall(
+                r'## \d{2}:\d{2} — twin\n(.*?)(?=\n## \d{2}:\d{2} — |\Z)',
+                today_log,
+                re.DOTALL,
+            )
+            if twin_blocks:
+                last_twin_msg = twin_blocks[-1].strip()
+                # Strip the trailing "> **observed:** ..." metadata line
+                # if present (we only want the actual response text).
+                last_twin_msg = re.sub(
+                    r'\n> \*\*observed:\*\*.*$',
+                    '',
+                    last_twin_msg,
+                    flags=re.DOTALL,
+                ).strip()
+    except Exception:
+        # Best-effort extraction — if it fails, the full context block
+        # above still has today's messages, so we're not worse off.
+        pass
+
+    last_msg_block = ""
+    if last_twin_msg:
+        # Truncate to keep the prompt small (no need to send the entire
+        # multi-fragment essay back to the LLM — the last 500 chars is
+        # enough for it to recognize "I just said this, don't repeat it").
+        snippet = last_twin_msg[:500]
+        last_msg_block = (
+            "\n\n# YOUR LAST MESSAGE — DON'T REPEAT THIS\n\n"
+            "This is what you JUST said to the user. Do NOT repeat this "
+            "information. If the user asks \"what else?\" or similar, "
+            "MOVE ON to the next thing — don't restate what's below.\n\n"
+            f"{snippet}\n"
+        )
+
     prompt = f"""{knowledge}
 
 ---
 
 # TODAY'S CONVERSATION
 
-{context}
+{context}{last_msg_block}
 
 # NEW MESSAGE FROM USER
 
 {user_text}
 """
     return prompt
+
+
+def _safe_append_to_twin_log(content: str, observation: str = "") -> bool:
+    """Append the twin's response to today's log with retry-on-failure.
+
+    BUG 1 FIX — The default `cm.append_to_today("twin", ...)` call would
+    propagate any exception up to handle_text's outer try/except, which
+    catches + logs it but then releases the processing lock in finally.
+    That means the next message CAN be processed even though the
+    previous twin response never made it to the daily log → the next
+    handler's `_build_gemini_prompt` reads the log without the twin's
+    previous reply → the LLM doesn't see what it just said → it repeats
+    itself.
+
+    This helper retries the append a few times with backoff so a
+    transient disk/IO hiccup doesn't silently drop the twin's response
+    from the conversation log. On persistent failure it logs loudly
+    (so we know the bot may repeat itself on the next message) but
+    does NOT raise — the message has already been sent to the user, so
+    raising here would just bounce the whole handler into the outer
+    except without helping anything.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            if observation:
+                cm.append_to_today("twin", content, observation=observation)
+            else:
+                cm.append_to_today("twin", content)
+            return True
+        except Exception as e:
+            last_exc = e
+            log.warning(
+                f"Twin log append failed (attempt {attempt + 1}/3): "
+                f"{type(e).__name__}: {e}"
+            )
+            # 0.5s, 1.0s, 1.5s backoff — short enough not to delay the
+            # next fragment send meaningfully, long enough for a
+            # transient FS lock to release.
+            time.sleep(0.5 * (attempt + 1))
+    log.error(
+        f"Twin log append PERSISTENTLY FAILED after 3 attempts "
+        f"(last error: {last_exc}). The next message handler may not "
+        f"see this response in the daily log, which could cause the "
+        f"twin to repeat itself. Content that was not logged "
+        f"(first 200 chars): {content[:200]!r}"
+    )
+    return False
 
 
 def _call_gemini(prompt: str, image_bytes: Optional[bytes] = None,
@@ -1187,7 +1288,13 @@ def handle_text(message):
                     current_response = "\n---\n".join(unsent_fragments)
                     result = _send_fragmented_reply(current_response)
                     if result.get("sent"):
-                        cm.append_to_today("twin", "\n---\n".join(result["sent"]))
+                        # BUG 1 FIX — use the retry-on-failure helper so a
+                        # transient append error doesn't drop this turn
+                        # from the log (which would cause the next handler
+                        # to not see what the twin just said).
+                        _safe_append_to_twin_log(
+                            "\n---\n".join(result["sent"])
+                        )
                         sent_so_far.extend(result["sent"])
                 break
 
@@ -1203,7 +1310,14 @@ def handle_text(message):
             # matches what the user actually saw (multiple fragments
             # joined by --- as one twin turn).
             if sent_fragments:
-                cm.append_to_today("twin", "\n---\n".join(sent_fragments))
+                # BUG 1 FIX — use the retry-on-failure helper. This is
+                # the critical append: if it silently fails, the next
+                # handler will not see the twin's last response in the
+                # daily log and the LLM will likely repeat itself. The
+                # helper retries 3x with backoff and logs loudly on
+                # persistent failure (rather than silently swallowing
+                # the error via the outer try/except).
+                _safe_append_to_twin_log("\n---\n".join(sent_fragments))
                 sent_so_far.extend(sent_fragments)
 
             # Take any new pending that arrived during the send (the
@@ -1478,7 +1592,7 @@ _PROACTIVE_SILENCE_THRESHOLD = 7200  # deprecated; smart loop scores silence win
 
 # New proactive constants
 _PROACTIVE_CHECK_INTERVAL_SMART = 900  # Check every 15 minutes
-_PROACTIVE_MAX_DAILY = 3  # Max proactive (non-appointment) messages per day
+_PROACTIVE_MAX_DAILY = 5  # Max proactive (non-appointment) messages per day
 _PROACTIVE_MIN_GAP = 7200  # Min 2 hours between proactive messages
 _PROACTIVE_QUIET_HOURS = (23, 7)  # 11pm to 7am
 
@@ -1616,8 +1730,8 @@ def _proactive_messaging_loop_smart():
             if not opportunity:
                 continue
 
-            # 30% random skip (variability) — even valid triggers don't always fire
-            if random.random() < 0.30:
+            # 15% random skip (variability) — even valid triggers don't always fire
+            if random.random() < 0.15:
                 log.info(f"Proactive opportunity found ({opportunity['reason']}) — randomly skipped for variability")
                 continue
 
@@ -1998,7 +2112,7 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
                                           + random.random() * 0.1)
 
         # If the best score is too low, don't send — better silent than spammy
-        if best["relevance_score"] * best["timing_score"] < 0.3:
+        if best["relevance_score"] * best["timing_score"] < 0.2:
             return None
 
         return best

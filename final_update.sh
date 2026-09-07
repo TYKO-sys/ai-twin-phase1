@@ -364,6 +364,68 @@ else
 fi
 
 # ------------------------------------------------------------
+# 8.7. BUG 3 FIX — Reorder .bashrc / .profile so PATH export
+# comes BEFORE the hook lines.
+# ------------------------------------------------------------
+# The earlier steps append lines in this order:
+#   1. ensure_freellmapi hook  (Step 8.5)
+#   2. export PATH="$HOME/bin:$PATH"  (Step 8.6 — only added if missing)
+#   3. ensure_twin hook  (Step 8.6)
+# That means the ensure_freellmapi hook fires BEFORE the PATH export,
+# so any command it calls from ~/bin/ (e.g. `freellmapi-start`,
+# `twin-start`) is "command not found" on the first Termux open of
+# the session — the user reported exactly this as
+# "twin-start: command not found".
+#
+# Fix: strip the three relevant lines from both .bashrc and .profile
+# and re-append them in the correct order (PATH first, then the two
+# hooks). This is idempotent — running final_update.sh again produces
+# the same end state. We use sed -i for the strip so the file content
+# is preserved (just the matching lines are removed), not appended
+# to.
+print_step "Step 8.7: Reorder .bashrc/.profile — PATH export before hooks (BUG 3 fix)"
+
+for RCFILE in "$BASHRC" "$PROFILE"; do
+    # Skip silently if the file doesn't exist — we only reorder what's
+    # already there. A missing .bashrc is a Termux misconfiguration but
+    # not one we should fix here.
+    [[ -f "$RCFILE" ]] || continue
+
+    # Strip the three relevant lines (if present). The patterns are
+    # specific enough to only match the lines we wrote, not user-added
+    # lines that happen to contain "ensure_twin" in a comment.
+    sed -i '/ensure_freellmapi\.sh.*&$/d' "$RCFILE" 2>/dev/null || true
+    sed -i '/ensure_twin\.sh.*&$/d' "$RCFILE" 2>/dev/null || true
+    sed -i '/export PATH="$HOME\/bin:$PATH"/d' "$RCFILE" 2>/dev/null || true
+    # Also strip the comment lines that previously appeared above the
+    # hook lines — both the old per-hook comments ("# Auto-start
+    # FreeLLMAPI on Termux open" / "# Auto-start twin on Termux open")
+    # and the unified "# Termux startup hooks..." comment we add below.
+    # Stripping them too makes this step fully idempotent: running
+    # final_update.sh twice produces the same end state (no accumulating
+    # duplicate comments).
+    sed -i '/^# Auto-start FreeLLMAPI on Termux open$/d' "$RCFILE" 2>/dev/null || true
+    sed -i '/^# Auto-start twin on Termux open$/d' "$RCFILE" 2>/dev/null || true
+    sed -i '/^# Termux startup hooks — PATH must come first/d' "$RCFILE" 2>/dev/null || true
+
+    # Re-add the three lines in the correct order:
+    #   1. PATH export (so ~/bin commands are findable)
+    #   2. FreeLLMAPI hook (depends on ~/bin)
+    #   3. Twin hook (depends on ~/bin)
+    {
+        echo ''
+        echo '# Termux startup hooks — PATH must come first so the hooks can find ~/bin commands'
+        echo 'export PATH="$HOME/bin:$PATH"'
+        echo '# Auto-start FreeLLMAPI on Termux open'
+        echo '[ -f "$HOME/bin/ensure_freellmapi.sh" ] && bash "$HOME/bin/ensure_freellmapi.sh" >/dev/null 2>&1 &'
+        echo '# Auto-start twin on Termux open'
+        echo '[ -f "$HOME/bin/ensure_twin.sh" ] && bash "$HOME/bin/ensure_twin.sh" >/dev/null 2>&1 &'
+    } >> "$RCFILE"
+
+    print_ok "Reordered $(basename "$RCFILE"): PATH export now precedes the ensure_freellmapi + ensure_twin hooks"
+done
+
+# ------------------------------------------------------------
 # 9. Set up Termux:Boot auto-start for FreeLLMAPI (if installed)
 # ------------------------------------------------------------
 print_step "Step 9: FreeLLMAPI auto-start"

@@ -3323,6 +3323,10 @@ def tool_get_current_location() -> str:
 
             return f"Location: {location_name} (lat={lat}, lon={lon}, accuracy={accuracy}m)"
         return "Could not get location. Make sure termux-api is installed."
+    except FileNotFoundError:
+        return "Location not available. Install termux-api: pkg install termux-api. Then grant location permission: Android Settings → Apps → Termux → Permissions → Location → Allow"
+    except subprocess.TimeoutExpired:
+        return "GPS timed out. You might be indoors or GPS is disabled. Try: 1. Go near a window 2. Make sure Location is enabled in Android Settings 3. Try again in a few minutes"
     except Exception as e:
         return f"Location error: {type(e).__name__}: {e}"
 
@@ -3502,6 +3506,8 @@ def tool_read_emails(folder: str = "INBOX", limit: int = 10, sender_filter: str 
         mail.logout()
 
         return f"Read {len(results)} emails from {folder}:\n\n" + "\n".join(results)
+    except imaplib.IMAP4.error as e:
+        return f"Email connection failed: {type(e).__name__}: {e}\n\nThis usually means the App Password is wrong or IMAP is not enabled. To fix: 1. Go to https://myaccount.google.com/apppasswords 2. Create a new App Password 3. Update SMTP_PASS in .env"
     except Exception as e:
         return f"Email reading failed: {type(e).__name__}: {e}"
 
@@ -3702,7 +3708,7 @@ def tool_get_call_log(limit: int = 10) -> str:
                 return f"Recent calls:\n{result.stdout[:1000]}"
         return "Could not get call log. Make sure termux-api is installed and call log permission is granted."
     except FileNotFoundError:
-        return "termux-call-log not available. Install with: pkg install termux-api"
+        return "Call log not available. Install termux-api: pkg install termux-api. Then grant phone permission: Android Settings → Apps → Termux → Permissions → Phone → Allow"
     except Exception as e:
         return f"Call log error: {type(e).__name__}: {e}"
 

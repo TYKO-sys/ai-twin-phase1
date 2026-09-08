@@ -628,6 +628,82 @@ def _send_telegram_message(chat_id: int, text: str,
     return False
 
 
+def _handle_tool_failure(tool_name: str, error_msg: str, chat_id: int) -> None:
+    """When a tool fails due to misconfiguration, send a user-friendly
+    interactive message to help the user fix it via Telegram.
+
+    Different failure types get different helpful messages:
+    - Email/IMAP failure → guide through Gmail App Password setup
+    - GPS/location failure → guide through termux-location permissions
+    - Call log failure → guide through call log permission
+    - SMTP failure → guide through email config
+    - General → just explain what happened clearly
+
+    This is the programmatic fallback path. The primary behavior fix lives
+    in the system prompt (BEHAVIORAL PRINCIPLES): the LLM is told to guide
+    the user interactively instead of saying "go fix it yourself". This
+    helper can be called from the tool dispatch layer or the wizard when a
+    tool result is detected as a misconfiguration error.
+    """
+    error_lower = error_msg.lower()
+
+    # Email/IMAP failures
+    if "imap" in error_lower or "smtp" in error_lower or "app password" in error_lower or "email" in tool_name.lower():
+        msg = (
+            "email reading needs a Gmail App Password to work.\n\n"
+            "Here's how to set it up (2 minutes):\n"
+            "1. Go to https://myaccount.google.com/apppasswords\n"
+            "2. Sign in with your Google account\n"
+            "3. Create a new App Password (name it 'AI Twin')\n"
+            "4. Copy the 16-character password\n"
+            "5. Send it to me here and I'll configure it automatically\n\n"
+            "Or if you already have one, send it to me and I'll update the config."
+        )
+        try:
+            _send_telegram_message(chat_id, msg)
+        except Exception:
+            pass
+        return
+
+    # GPS/Location failures
+    if "location" in tool_name.lower() or "gps" in error_lower or "location" in error_lower:
+        msg = (
+            "location needs GPS permission to work.\n\n"
+            "To fix this:\n"
+            "1. Android Settings → Apps → Termux → Permissions → Location → Allow\n"
+            "2. Make sure termux-api is installed: pkg install termux-api\n"
+            "3. Send 'where am I' again and I'll try once more\n\n"
+            "If you're indoors, GPS might just need a moment. Try going near a window."
+        )
+        try:
+            _send_telegram_message(chat_id, msg)
+        except Exception:
+            pass
+        return
+
+    # Call log failures
+    if "call" in tool_name.lower() or "call_log" in error_lower:
+        msg = (
+            "call log access needs permission.\n\n"
+            "To fix this:\n"
+            "1. Android Settings → Apps → Termux → Permissions → Phone → Allow\n"
+            "2. Make sure termux-api is installed: pkg install termux-api\n"
+            "3. Try again"
+        )
+        try:
+            _send_telegram_message(chat_id, msg)
+        except Exception:
+            pass
+        return
+
+    # General failure
+    msg = f"that tool hit a snag. Here's what happened: {error_msg[:200]}\n\nIf this keeps happening, say 'run diagnostic' and I'll check everything."
+    try:
+        _send_telegram_message(chat_id, msg)
+    except Exception:
+        pass
+
+
 def _safe_reply(message, text: str) -> None:
     """Reply, splitting long messages into chunks if needed.
 

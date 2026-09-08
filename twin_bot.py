@@ -332,6 +332,15 @@ def _build_gemini_prompt(user_text: str) -> str:
     global _last_context_files
     _last_context_files = []
 
+    # CURRENT TIME CONTEXT — injected at the top so the LLM can compute
+    # relative dates (today, tomorrow, next Tuesday) from the absolute
+    # dates in the knowledge base. Without this, the LLM has no
+    # reference point and guesses relative dates incorrectly.
+    now = datetime.now()
+    time_context = f"CURRENT TIME: {now.strftime('%I:%M %p on %A, %B %d, %Y')}\n"
+    time_context += f"Day of week: {now.strftime('%A')} ({'weekend' if now.weekday() >= 5 else 'weekday'})\n"
+    time_context += f"ISO date: {now.strftime('%Y-%m-%d')}\n\n"
+
     # The knowledge base — distilled understanding, not raw logs
     knowledge = kb.get_all_knowledge()
     _last_context_files.append("knowledge_base")
@@ -385,7 +394,7 @@ def _build_gemini_prompt(user_text: str) -> str:
             f"{snippet}\n"
         )
 
-    prompt = f"""{knowledge}
+    prompt = f"""{time_context}{knowledge}
 
 ---
 
@@ -1660,6 +1669,11 @@ _PROACTIVE_MAX_DAILY = 5  # Max proactive (non-appointment) messages per day
 _PROACTIVE_MIN_GAP = 7200  # Min 2 hours between proactive messages
 _PROACTIVE_QUIET_HOURS = (23, 7)  # 11pm to 7am
 
+# Nudge log — persistent record of what the proactive system already
+# suggested. Used to dedup: before nudging a topic, check if we already
+# nudged about it recently (see _was_recently_nudged / _log_nudge).
+NUDGE_LOG_FILE = Path(MEMORY_DIR) / "nudge_log.json"
+
 # New proactive state
 _proactive_sent_today = 0
 _proactive_last_reset_date = None
@@ -1832,7 +1846,16 @@ def _proactive_messaging_loop_smart():
                 continue
 
             # Send the message
-            _send_smart_proactive(opportunity)
+            sent = _send_smart_proactive(opportunity)
+
+            # Log what we nudged about so the nudge-log dedup
+            # (see _was_recently_nudged) can skip it for the next 12h.
+            # Only log if the message was actually sent.
+            if sent:
+                _log_nudge(
+                    opportunity.get("_topic", opportunity.get("reason", "unknown")),
+                    opportunity.get("reason", "unknown"),
+                )
 
             _proactive_sent_today += 1
             _proactive_last_send_time = time.time()
@@ -1905,6 +1928,71 @@ def _load_recent_conversation(hours: int = 24) -> str:
         return ""
 
 
+def _load_nudge_log() -> list:
+    """Load the nudge log — list of {topic, timestamp, reason} entries."""
+    try:
+        if NUDGE_LOG_FILE.exists():
+            return json.loads(NUDGE_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_nudge_log(entries: list) -> None:
+    """Save the nudge log (keep last 50 entries).
+
+    NOTE: the parameter is named `entries` (not `log`) so it does NOT
+    shadow the module-level `log` logger — otherwise the error path's
+    `log.error(...)` would call `.error` on a list and raise AttributeError.
+    """
+    try:
+        NUDGE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Keep only the last 50 entries
+        entries = entries[-50:]
+        NUDGE_LOG_FILE.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        log.error(f"Could not save nudge log: {e}")
+
+
+def _was_recently_nudged(topic: str, hours: int = 12) -> bool:
+    """Check if a topic was already nudged about in the last N hours."""
+    try:
+        log_entries = _load_nudge_log()
+        cutoff = time.time() - (hours * 3600)
+        for entry in log_entries:
+            if entry.get("topic", "").lower() == topic.lower():
+                ts = entry.get("timestamp", 0)
+                if isinstance(ts, (int, float)) and ts > cutoff:
+                    return True
+                # Also check ISO timestamps
+                if isinstance(ts, str):
+                    try:
+                        from datetime import datetime as _dt
+                        dt = _dt.fromisoformat(ts)
+                        if dt.timestamp() > cutoff:
+                            return True
+                    except Exception:
+                        pass
+        return False
+    except Exception:
+        return False
+
+
+def _log_nudge(topic: str, reason: str) -> None:
+    """Log that we nudged about a topic."""
+    try:
+        log_entries = _load_nudge_log()
+        log_entries.append({
+            "topic": topic.lower().strip(),
+            "timestamp": time.time(),
+            "iso_time": datetime.now().isoformat(),
+            "reason": reason,
+        })
+        _save_nudge_log(log_entries)
+    except Exception as e:
+        log.error(f"Could not log nudge: {e}")
+
+
 def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
     """Check if the user already addressed this opportunity in recent conversation.
 
@@ -1969,17 +2057,6 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
 
     if not key_terms:
         return False
-
-    # Also check if the TWIN already mentioned this topic recently
-    # (not just the user — the twin itself might have already nudged)
-    twin_mentions = re.findall(r'## \d{2}:\d{2} — twin\n(.*?)(?=\n## \d{2}:\d{2} — |\Z)', recent_conv, re.DOTALL)
-    for twin_msg in twin_mentions[-5:]:  # Last 5 twin messages
-        twin_msg_lower = twin_msg.lower()
-        for term in key_terms:
-            if term in twin_msg_lower:
-                # The twin already mentioned this topic recently
-                log.info(f"Skipping proactive — twin already mentioned '{term}' recently")
-                return True
 
     # If any key term appears in the conversation with a completion marker
     # OR a blocked marker nearby (within a 200-char window on either side),
@@ -2193,9 +2270,67 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
                 return None
             opportunities = filtered_opportunities
 
-        # Combined score = relevance * timing, with a small random jitter
-        best = max(opportunities, key=lambda o: o["relevance_score"] * o["timing_score"]
-                                          + random.random() * 0.1)
+        # Filter out topics we already nudged about recently (nudge log
+        # dedup — see _was_recently_nudged / _log_nudge). This is the
+        # systemic replacement for the old "check twin's own messages"
+        # hack: instead of grepping the conversation log for twin
+        # mentions, we keep an explicit record of what we nudged and
+        # when, and skip anything nudged in the last 12 hours.
+        filtered = []
+        for opp in opportunities:
+            # Extract topic from the opportunity context
+            context_lower = opp.get("context", "").lower()
+            # Determine the topic key from the context
+            topic = ""
+            if "dr lu" in context_lower or "surgeon" in context_lower or "mobilitylink" in context_lower or "mta" in context_lower:
+                topic = "surgeon_mta"
+            elif "probation" in context_lower:
+                topic = "probation"
+            elif "labcorp" in context_lower or "ryan white" in context_lower or "ride" in context_lower:
+                topic = "rides"
+            elif "wgu" in context_lower or "scholarship" in context_lower:
+                topic = "wgu"
+            elif "most" in context_lower or "surgeon notes" in context_lower:
+                topic = "most_notes"
+            elif "mychart" in context_lower or "ortho" in context_lower or "imaging" in context_lower:
+                topic = "ortho_prep"
+            elif "scraper" in context_lower or "instagram" in context_lower or "study" in context_lower:
+                topic = "study_scraper"
+            else:
+                topic = opp.get("reason", "unknown")
+
+            if topic and _was_recently_nudged(topic, hours=12):
+                log.info(f"Skipping proactive — already nudged about '{topic}' in last 12h")
+                continue
+            opp["_topic"] = topic  # Save for logging later
+            filtered.append(opp)
+
+        opportunities = filtered
+        if not opportunities:
+            log.info(
+                "All proactive opportunities filtered — already nudged "
+                "about them recently (nudge log)."
+            )
+            return None
+
+        # Weighted random selection — the highest-scored task is most
+        # likely but not guaranteed. This creates natural rotation through
+        # tasks instead of always picking the same one. If there are 3
+        # opportunities with scores 0.81, 0.56, 0.45, the first has ~50%
+        # chance, the second ~33%, the third ~17%.
+        weights = []
+        for opp in opportunities:
+            score = opp["relevance_score"] * opp["timing_score"]
+            # Add random jitter so ties don't always resolve the same way
+            weights.append(score + random.uniform(0, 0.15))
+
+        # Normalize weights to probabilities
+        total = sum(weights)
+        if total > 0:
+            probs = [w / total for w in weights]
+            best = random.choices(opportunities, weights=probs, k=1)[0]
+        else:
+            best = opportunities[0]
 
         # If the best score is too low, don't send — better silent than spammy
         if best["relevance_score"] * best["timing_score"] < 0.2:
@@ -2288,7 +2423,7 @@ Write the message:"""
 Write the message:"""
         else:
             log.warning(f"Unknown proactive reason: {reason} — skipping")
-            return  # Unknown reason, don't send
+            return False  # Unknown reason, don't send
 
         response = llm_client.generate(
             prompt=prompt,
@@ -2306,8 +2441,10 @@ Write the message:"""
             dedup_key = opportunity.get("dedup_key")
             if dedup_key:
                 _proactive_reminders_sent.add(dedup_key)
+            return True  # sent successfully
     except Exception as e:
         log.error(f"Smart proactive send failed: {e}")
+    return False
 
 
 def _check_upcoming_appointments(now: datetime):

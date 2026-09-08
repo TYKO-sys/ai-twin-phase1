@@ -785,6 +785,53 @@ TOOL_DEFINITIONS = [
             },
             "required": ["what", "when"]
         }
+    },
+    {
+        "name": "get_current_location",
+        "description": "Get the user's current GPS location via termux-location (network provider). Logs the reading to a long-term location log so patterns can be built. Use this when the user asks 'where am I?' or when the twin needs a fresh, accurate location reading. For pattern-based inference (no GPS call), use infer_location instead.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "infer_location",
+        "description": "Infer the user's current location based on historical time-of-day patterns from the location log. Does NOT call GPS — uses past readings to guess where the user typically is at this hour on this day of week. Cheaper than get_current_location and works without a fresh GPS fix. Returns a confidence score. Requires at least 10 logged readings to work.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "get_location_history",
+        "description": "Get the user's location history for the last N hours (default 24). Shows a list of inferred locations with timestamps. Use when the user asks 'where have I been?' or when the twin wants to recall where the user was earlier today.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hours": {"type": "integer", "description": "How many hours of history to return (default 24)"}
+            }
+        }
+    },
+    {
+        "name": "read_emails",
+        "description": "Read recent emails via IMAP from the user's Gmail. Uses SMTP credentials from .env. Can filter by sender domain. Useful for checking if doctors, probation office, or WGU replied without the user having to check manually.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "folder": {"type": "string", "description": "IMAP folder (INBOX, [Gmail]/Sent Mail, etc.)"},
+                "limit": {"type": "integer", "description": "Max emails to return (default 10)"},
+                "sender_filter": {"type": "string", "description": "Filter by sender domain (e.g., 'jhu.edu', 'wgu.edu')"}
+            }
+        }
+    },
+    {
+        "name": "infer_next_steps",
+        "description": "Infer what the user needs to do next by analyzing the gap between completed tasks, upcoming deadlines, active goals, and pending reminders. Identifies steps the user may not know they need to take. Use when the user asks 'what's next?' or 'what should I do?' or when the twin proactively wants to suggest the next move.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "get_call_log",
+        "description": "Read the phone's call log to see who the user recently talked to. Useful for context — the twin can infer 'you called Dr. Lu's office' without the user having to report it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max calls to return (default 10)"}
+            }
+        }
     }
 ]
 
@@ -3207,6 +3254,460 @@ def tool_set_reminder(what: str, when: str) -> str:
 
 
 # ---------------------------------------------------------------------- #
+# Life Manager Mode — location awareness, email reading,
+# next-step inference, call log access
+# ---------------------------------------------------------------------- #
+
+LOCATION_LOG_FILE = Path.home() / "ai-twin-memory" / "location_log.json"
+
+
+def _load_location_log() -> list:
+    """Load the location log."""
+    try:
+        if LOCATION_LOG_FILE.exists():
+            return json.loads(LOCATION_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _save_location_log(log: list) -> None:
+    """Save the location log (keep last 500 entries = ~5 days at 15min intervals)."""
+    try:
+        LOCATION_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log = log[-500:]
+        LOCATION_LOG_FILE.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def tool_get_current_location() -> str:
+    """Get the current GPS location using termux-location.
+
+    Returns latitude, longitude, and a human-readable address (if available).
+    Also appends the reading to the location log so patterns can be built
+    over time (see tool_infer_location).
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["termux-location", "-p", "network"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0 and result.stdout:
+            data = json.loads(result.stdout)
+            lat = data.get("latitude", 0)
+            lon = data.get("longitude", 0)
+            accuracy = data.get("accuracy", 0)
+
+            # Simple location inference based on coordinates
+            # (Baltimore area: lat ~39.2-39.4, lon ~-76.5 to -76.7)
+            location_name = "unknown"
+            if 39.2 < lat < 39.4 and -76.7 < lon < -76.5:
+                location_name = "Baltimore area"
+            elif abs(lat) < 0.1 and abs(lon) < 0.1:
+                location_name = "location unavailable"
+            else:
+                location_name = f"{lat:.4f}, {lon:.4f}"
+
+            # Log this reading
+            log_entries = _load_location_log()
+            log_entries.append({
+                "timestamp": datetime.now().isoformat(),
+                "lat": lat,
+                "lon": lon,
+                "accuracy": accuracy,
+                "inferred_location": location_name,
+            })
+            _save_location_log(log_entries)
+
+            return f"Location: {location_name} (lat={lat}, lon={lon}, accuracy={accuracy}m)"
+        return "Could not get location. Make sure termux-api is installed."
+    except Exception as e:
+        return f"Location error: {type(e).__name__}: {e}"
+
+
+def tool_infer_location() -> str:
+    """Infer the user's current location based on historical patterns.
+
+    Uses the location log to build a time-of-day pattern:
+    - What location is the user typically at this hour on this day of week?
+    - Returns the most likely current location without calling GPS.
+    """
+    try:
+        log_entries = _load_location_log()
+        if len(log_entries) < 10:
+            return "Not enough location data yet. Need at least 10 readings to infer patterns."
+
+        now = datetime.now()
+        current_hour = now.hour
+        current_weekday = now.weekday()  # 0=Mon, 6=Sun
+
+        # Find entries from the same hour and similar weekday
+        matching = []
+        for entry in log_entries:
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                if ts.hour == current_hour and abs(ts.weekday() - current_weekday) <= 1:
+                    matching.append(entry["inferred_location"])
+            except Exception:
+                continue
+
+        if not matching:
+            # Fall back to same hour, any day
+            for entry in log_entries:
+                try:
+                    ts = datetime.fromisoformat(entry["timestamp"])
+                    if ts.hour == current_hour:
+                        matching.append(entry["inferred_location"])
+                except Exception:
+                    continue
+
+        if not matching:
+            return "No matching location pattern found for this time."
+
+        # Most common location
+        from collections import Counter
+        most_common = Counter(matching).most_common(1)[0]
+        confidence = most_common[1] / len(matching)
+
+        return f"Likely at: {most_common[0]} (confidence: {confidence:.0%} based on {len(matching)} historical readings)"
+    except Exception as e:
+        return f"Location inference error: {type(e).__name__}: {e}"
+
+
+def tool_get_location_history(hours: int = 24) -> str:
+    """Get the user's location history for the last N hours.
+
+    Args:
+        hours: How many hours of history to return (default 24)
+    """
+    try:
+        log_entries = _load_location_log()
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(hours=hours)
+
+        recent = []
+        for entry in log_entries[-50:]:  # Check last 50 entries
+            try:
+                ts = datetime.fromisoformat(entry["timestamp"])
+                if ts > cutoff:
+                    recent.append(f"  {ts.strftime('%a %I:%M %p')}: {entry['inferred_location']}")
+            except Exception:
+                continue
+
+        if not recent:
+            return f"No location data in the last {hours} hours."
+
+        return f"Location history (last {hours}h, {len(recent)} readings):\n" + "\n".join(recent)
+    except Exception as e:
+        return f"Location history error: {type(e).__name__}: {e}"
+
+
+def tool_read_emails(folder: str = "INBOX", limit: int = 10, sender_filter: str = "") -> str:
+    """Read recent emails via IMAP from the user's Gmail account.
+
+    Uses the SMTP credentials already in .env (SMTP_USER, SMTP_PASS).
+    Gmail IMAP: imap.gmail.com:993
+
+    Args:
+        folder: IMAP folder to read (INBOX, [Gmail]/Sent Mail, etc.)
+        limit: Max emails to return (default 10)
+        sender_filter: Only return emails from this sender domain (e.g., "jhu.edu")
+    """
+    import imaplib
+    import email
+    from email.header import decode_header
+
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+
+    if not smtp_user or not smtp_pass:
+        return "SMTP not configured. Set SMTP_USER and SMTP_PASS in .env to enable email reading."
+
+    try:
+        # Connect to Gmail IMAP
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail.login(smtp_user, smtp_pass)
+        mail.select(folder)
+
+        # Search for recent emails
+        search_criteria = "ALL"
+        if sender_filter:
+            search_criteria = f'FROM "{sender_filter}"'
+
+        status, messages = mail.search(None, search_criteria)
+        if status != "OK":
+            return "Failed to search emails."
+
+        email_ids = messages[0].split()
+        if not email_ids:
+            return f"No emails found in {folder}."
+
+        # Get the most recent N
+        email_ids = email_ids[-limit:]
+        email_ids.reverse()
+
+        results = []
+        for eid in email_ids:
+            status, msg_data = mail.fetch(eid, "(RFC822)")
+            if status != "OK":
+                continue
+
+            raw_email = msg_data[0][1]
+            msg = email.message_from_bytes(raw_email)
+
+            # Decode subject
+            subject = msg.get("Subject", "")
+            decoded_subject = decode_header(subject)
+            subject = ""
+            for part, enc in decoded_subject:
+                if isinstance(part, bytes):
+                    subject += part.decode(enc or "utf-8", errors="replace")
+                else:
+                    subject += part
+
+            # Get sender
+            from_header = msg.get("From", "")
+            decoded_from = decode_header(from_header)
+            sender = ""
+            for part, enc in decoded_from:
+                if isinstance(part, bytes):
+                    sender += part.decode(enc or "utf-8", errors="replace")
+                else:
+                    sender += part
+
+            # Get date
+            date = msg.get("Date", "")
+
+            # Get body (first 200 chars)
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    content_type = part.get_content_type()
+                    if content_type == "text/plain":
+                        try:
+                            body = part.get_payload(decode=True).decode("utf-8", errors="replace")[:200]
+                        except Exception:
+                            body = "(could not decode body)"
+                        break
+            else:
+                try:
+                    body = msg.get_payload(decode=True).decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    body = "(could not decode body)"
+
+            results.append(f"From: {sender}\nDate: {date}\nSubject: {subject}\nBody: {body}\n---")
+
+        mail.logout()
+
+        return f"Read {len(results)} emails from {folder}:\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"Email reading failed: {type(e).__name__}: {e}"
+
+
+def tool_infer_next_steps() -> str:
+    """Infer what the user needs to do next based on gap analysis.
+
+    Cross-references:
+    - completed.md (what they've done)
+    - upcoming.md (what's coming)
+    - tasks.json (active tasks)
+    - goals.json (long-term goals)
+    - reminders.json (pending reminders)
+
+    Identifies the GAP between what's done and what's needed,
+    and returns specific next steps the user might not know about.
+    """
+    try:
+        from datetime import timedelta
+
+        kb_dir = Path.home() / "ai-twin-memory" / "knowledge"
+        memory_dir = Path.home() / "ai-twin-memory"
+
+        # Load all knowledge
+        def _read_kb(filename):
+            path = kb_dir / filename
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+            return ""
+
+        completed = _read_kb("completed.md")
+        upcoming = _read_kb("upcoming.md")
+        # tasks_text kept for backward-compat / future use
+        _read_kb("tasks.md")
+
+        # Load tasks.json
+        tasks = _load_tasks()
+
+        # Load goals
+        goals_path = memory_dir / "goals.json"
+        goals = []
+        if goals_path.exists():
+            try:
+                goals = json.loads(goals_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        # Load reminders
+        reminders_path = memory_dir / "reminders.json"
+        reminders = []
+        if reminders_path.exists():
+            try:
+                reminders = json.loads(reminders_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        now = datetime.now()
+
+        # GAP ANALYSIS
+        lines = []
+
+        # 1. Active tasks that are overdue
+        overdue = []
+        for t in tasks:
+            status = t.get("status", "active")
+            if status in ("done", "completed"):
+                continue
+            due = t.get("due_date", "")
+            if due:
+                try:
+                    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', due)
+                    if match:
+                        due_date = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                        if due_date < now:
+                            days_overdue = (now - due_date).days
+                            overdue.append(f"  OVERDUE ({days_overdue}d): {t.get('title', '?')} — due {due}")
+                except Exception:
+                    pass
+
+        if overdue:
+            lines.append("OVERDUE TASKS:")
+            lines.extend(overdue)
+            lines.append("")
+
+        # 2. Active tasks due in next 7 days
+        upcoming_tasks = []
+        week = now + timedelta(days=7)
+        for t in tasks:
+            status = t.get("status", "active")
+            if status in ("done", "completed", "blocked"):
+                continue
+            due = t.get("due_date", "")
+            if due:
+                try:
+                    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', due)
+                    if match:
+                        due_date = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                        if now <= due_date <= week:
+                            days = (due_date - now).days
+                            upcoming_tasks.append(f"  {t.get('title', '?')} — due in {days}d ({due}) — status: {status}")
+                except Exception:
+                    pass
+
+        if upcoming_tasks:
+            lines.append("DUE THIS WEEK:")
+            lines.extend(upcoming_tasks)
+            lines.append("")
+
+        # 3. Blocked tasks
+        blocked = [t for t in tasks if t.get("status") in ("blocked", "waiting")]
+        if blocked:
+            lines.append("BLOCKED:")
+            for t in blocked:
+                lines.append(f"  {t.get('title', '?')} — blocked on: {t.get('blocked_on', 'unknown')}")
+            lines.append("")
+
+        # 4. Goals progress
+        if goals:
+            lines.append("GOALS:")
+            for g in goals:
+                title = g.get("title", g.get("name", "?"))
+                progress = g.get("progress", "unknown")
+                lines.append(f"  {title} — progress: {progress}")
+            lines.append("")
+
+        # 5. Pending reminders
+        pending_reminders = [r for r in reminders if not r.get("fired", False)]
+        if pending_reminders:
+            lines.append("PENDING REMINDERS:")
+            for r in pending_reminders:
+                lines.append(f"  {r.get('what', '?')} — due: {r.get('when_display', '?')}")
+            lines.append("")
+
+        # 6. GAP INFERENCE — what's missing
+        gaps = []
+
+        # Check if there's an upcoming appointment but no preparation task
+        if "ortho" in upcoming.lower() or "surgeon" in upcoming.lower():
+            if "mychart" not in completed.lower() and "imaging" not in completed.lower():
+                gaps.append("  GAP: Ortho appointment coming but no MyChart imaging pull completed. Next step: pull MRI/X-ray reports from MyChart.")
+
+        if "probation" in upcoming.lower():
+            if "ride" not in completed.lower() and "transport" not in completed.lower():
+                gaps.append("  GAP: Probation meeting coming but no ride confirmed. Next step: confirm transportation.")
+
+        # Check if there are tasks with no next_action
+        no_action = [t for t in tasks if t.get("status") == "active" and not t.get("next_action")]
+        if no_action:
+            gaps.append(f"  GAP: {len(no_action)} active task(s) have no next_action defined. The user doesn't know what the first step is.")
+            for t in no_action[:3]:
+                gaps.append(f"    — {t.get('title', '?')}: needs a next action")
+
+        if gaps:
+            lines.append("INFERRED GAPS (things the user may not know they need to do):")
+            lines.extend(gaps)
+            lines.append("")
+
+        if not lines:
+            return "Everything looks caught up. No gaps detected. No overdue tasks. No missing preparation steps."
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Next-step inference failed: {type(e).__name__}: {e}"
+
+
+def tool_get_call_log(limit: int = 10) -> str:
+    """Get recent call log entries using termux-call-log.
+
+    Returns a list of recent calls with phone number, type (incoming/outgoing/missed),
+    and timestamp. Useful for the twin to know who the user talked to without asking.
+
+    Args:
+        limit: Max calls to return (default 10)
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["termux-call-log", "-l", str(limit)],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0 and result.stdout:
+            # Parse the JSON output
+            try:
+                calls = json.loads(result.stdout)
+                lines = [f"Recent calls ({len(calls)}):"]
+                for call in calls[:limit]:
+                    number = call.get("phone_number", "unknown")
+                    name = call.get("name", "")
+                    call_type = call.get("type", "unknown")
+                    timestamp = call.get("datetime", "")
+                    duration = call.get("duration", 0)
+
+                    display = f"  {timestamp}: {call_type} {name or number} ({duration}s)"
+                    lines.append(display)
+                return "\n".join(lines)
+            except json.JSONDecodeError:
+                # termux-call-log might return plain text
+                return f"Recent calls:\n{result.stdout[:1000]}"
+        return "Could not get call log. Make sure termux-api is installed and call log permission is granted."
+    except FileNotFoundError:
+        return "termux-call-log not available. Install with: pkg install termux-api"
+    except Exception as e:
+        return f"Call log error: {type(e).__name__}: {e}"
+
+
+# ---------------------------------------------------------------------- #
 # Tool Function Registry
 # ---------------------------------------------------------------------- #
 
@@ -3262,6 +3763,12 @@ _TOOL_FUNCTIONS = {
     "remove_banned_phrase": tool_remove_banned_phrase,
     "update_knowledge": tool_update_knowledge,
     "set_reminder": tool_set_reminder,
+    "get_current_location": tool_get_current_location,
+    "infer_location": tool_infer_location,
+    "get_location_history": tool_get_location_history,
+    "read_emails": tool_read_emails,
+    "infer_next_steps": tool_infer_next_steps,
+    "get_call_log": tool_get_call_log,
 }
 
 

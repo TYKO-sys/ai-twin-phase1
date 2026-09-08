@@ -2210,6 +2210,49 @@ def _score_proactive_opportunity(now: datetime) -> Optional[dict]:
         except Exception:
             pass
 
+        # 8. Email reply check — did a relevant sender email back?
+        # Only check during business hours on weekdays (offices open). We
+        # poll the user's inbox for replies from medical/probation/school
+        # senders — if anything new arrived, surface it as a proactive
+        # opportunity. Heavily wrapped in try/except: IMAP failures, missing
+        # SMTP creds, and termux without internet all fail silently.
+        try:
+            from tools import tool_read_emails
+            # Only check emails during business hours on weekdays
+            if not is_weekend and 9 <= now.hour <= 17:
+                # Check for replies from medical/probation/school senders
+                for domain in ["jhu.edu", "wgu.edu", "mdp.state.md.us"]:
+                    emails = tool_read_emails(folder="INBOX", limit=3, sender_filter=domain)
+                    if "No emails found" not in emails and len(emails) > 50:
+                        opportunities.append({
+                            "reason": "email_reply",
+                            "context": f"New email from {domain}: {emails[:200]}",
+                            "timing_score": 0.8,
+                            "relevance_score": 0.7,
+                        })
+                        break  # Only one email notification per cycle
+        except Exception:
+            pass
+
+        # 9. Call log check — did the user make/receive relevant calls?
+        # Look at the most recent calls to detect Baltimore-area activity
+        # (443/410 area codes) and surface it so the twin can ask about
+        # the outcome without the user having to report it.
+        try:
+            from tools import tool_get_call_log
+            calls = tool_get_call_log(limit=5)
+            if "Could not get" not in calls and len(calls) > 50:
+                # Check if any recent calls match known contacts
+                if "443" in calls or "410" in calls:  # Baltimore area codes
+                    opportunities.append({
+                        "reason": "recent_calls",
+                        "context": f"Recent call activity: {calls[:200]}",
+                        "timing_score": 0.5,
+                        "relevance_score": 0.6,
+                    })
+        except Exception:
+            pass
+
         # Score and pick the best opportunity
         if not opportunities:
             return None
@@ -3428,6 +3471,32 @@ Write the message now:"""
             log.error(f"Daily check-in error: {e}")
 
 
+def _location_logging_loop():
+    """Background thread that logs GPS location every 15 minutes.
+
+    Builds a pattern over time so the twin can infer where the user is
+    without calling GPS every time (see tool_infer_location). Only logs
+    during waking hours (7am-10pm) to save battery. Failures are logged
+    and swallowed — this thread must never crash the bot.
+    """
+    from tools import tool_get_current_location
+    log.info("Location logging started (checks every 15 minutes)")
+
+    while True:
+        time.sleep(900)  # 15 minutes
+        try:
+            # Only log during waking hours
+            now = datetime.now()
+            if now.hour < 7 or now.hour > 22:
+                continue
+
+            result = tool_get_current_location()
+            if "Location:" in result:
+                log.info(f"Location logged: {result[:80]}")
+        except Exception as e:
+            log.error(f"Location logging error: {e}")
+
+
 def _cancel_redundant_reminders(user_text: str):
     """Cancel pending proactive reminders that are now redundant.
 
@@ -3872,6 +3941,13 @@ def main() -> None:
     checkin_thread = threading.Thread(target=_daily_check_in_loop, daemon=True)
     checkin_thread.start()
     log.info("Daily check-in thread started")
+
+    # Start the location logging thread (GPS every 15 minutes, waking hours only).
+    # Builds a long-term location pattern so the twin can later infer where
+    # the user is without calling GPS on every prompt.
+    location_thread = threading.Thread(target=_location_logging_loop, daemon=True)
+    location_thread.start()
+    log.info("Location logging thread started (15-min interval)")
 
     # Initialize phone lock — refuses to start if another phone is
     # actively running the twin (heartbeat within last 5 minutes from

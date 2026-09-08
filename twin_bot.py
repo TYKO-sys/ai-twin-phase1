@@ -1970,6 +1970,17 @@ def _user_already_addressed(opportunity: dict, recent_conv: str) -> bool:
     if not key_terms:
         return False
 
+    # Also check if the TWIN already mentioned this topic recently
+    # (not just the user — the twin itself might have already nudged)
+    twin_mentions = re.findall(r'## \d{2}:\d{2} — twin\n(.*?)(?=\n## \d{2}:\d{2} — |\Z)', recent_conv, re.DOTALL)
+    for twin_msg in twin_mentions[-5:]:  # Last 5 twin messages
+        twin_msg_lower = twin_msg.lower()
+        for term in key_terms:
+            if term in twin_msg_lower:
+                # The twin already mentioned this topic recently
+                log.info(f"Skipping proactive — twin already mentioned '{term}' recently")
+                return True
+
     # If any key term appears in the conversation with a completion marker
     # OR a blocked marker nearby (within a 200-char window on either side),
     # skip this opportunity — the user already addressed it (either by doing

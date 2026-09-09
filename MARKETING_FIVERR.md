@@ -1,153 +1,118 @@
-# Fiverr Gig — "I'll Install a 24/7 AI Twin on Your Android Phone"
+# Fiverr Gig
 
 ## Gig Title
 
-I'll install a 24/7 AI twin on your Android phone that knows your life without you telling it — and never sleeps
+I'll install an AI twin on your Android phone that knows your life without you telling it — reads your emails, knows where you are, tells you the truth — running 24/7 for $0/month
 
-## Category
+## The Pitch (read this first)
 
-Technology > Programming & Tech > AI Services
+This is a text twin that lives on your phone and talks to you through text messages — it remembers everything you tell it, reads your emails, sees who you call, knows where you are, and reaches out to you first when it has something to say. It's for people who are drowning in their own thoughts and need something holding their context. Not a chatbot. Not an app. A twin.
 
-## Gig Description
+## What You Get
 
-### The Short Version
+- A fully set-up AI twin living on your phone, talking to you through text
+- It remembers every conversation — and builds a profile of who you are over time
+- It reads your emails (you don't have to tell it "the doctor replied" — it checks your inbox and knows)
+- It sees who you call and updates what it knows about your life
+- It learns where you are after about a week, and suggests things you can actually do right now, where you actually are
+- It tells you what's next — "you have an appointment in 6 days, pull your records tonight"
+- It reaches out first when it has something to say, not on a timer — sometimes morning, sometimes 2:47 PM
+- It pushes you when you're avoiding something, and calls you out when you're lying to yourself — honestly, not meanly
+- It searches the web, reads websites, monitors news, drafts your emails, tracks your goals, sets reminders, journals for you, reads text from photos of documents, sends texts, makes phone calls
+- It runs 24/7 — even when your screen is off, even when you're asleep, even after your phone reboots
+- It costs $0/month — uses 34 free AI engines, and switches automatically when one gets tired
+- It moves to a new phone with one command — same memory, same personality, the twin doesn't know it moved
+- Everything stays private on your phone — no cloud, no subscription, no company reading your data
+- A 30-minute call where I install it live and teach you how to use it well
 
-You get an AI twin that lives in a Telegram chat on your phone. It remembers everything you tell it — and a lot of things you don't. It reads your emails via IMAP. It reads your call log. It learns where you are from your location patterns and suggests tasks based on where you actually are. It infers your next step before you know you need to take it. It reaches out when it has something to say, not on a timer. It searches the web, scrapes sites, monitors RSS feeds, drafts your emails, tracks your goals, fires webhooks, sends SMS, dials the phone, reads screenshots with OCR, and calls you out when you're lying to yourself.
+## How It Works
 
-It runs 24/7. It costs $0/month after setup — forever — because it runs on FreeLLMAPI: 34 free AI providers behind one endpoint with automatic failover. When one rate-limits, it switches. You never see it. It never sleeps. It never forgets.
+1. You book, we pick a time, we get on a call
+2. I install it on your phone while you watch — no coding on your end
+3. You text it, it texts back, you watch it reach out when it has something to say — done
 
-And when you upgrade your phone, one command backs the whole twin up and restores it on the new device. The twin doesn't even know it moved.
+That's it. You pay when you're satisfied.
 
-I built this for myself when I couldn't turn my brain off. Now I'll install it on your phone in 30 minutes.
+## Why This Is Different
 
----
+Every other AI assistant is an app you have to remember to open. It doesn't know you. It doesn't remember what you said last Tuesday. It doesn't ping you when something matters. It doesn't read your inbox or know who you called or know where you are. You ask it a question, it answers, you forget. It forgets too.
 
-### What You'll Get
-
-✓ A fully configured AI twin running silently on your Android phone
-✓ **48 built-in tools** — web search, URL reader, web scraper, RSS monitoring + news digest, website change monitor, OCR (read documents/screenshots), email reading (IMAP), call-log awareness, location awareness + location inference, next-step inference, email sending, calendar events, SMS, dial phone, alarms, notifications, task & goal management, contact tracking with follow-ups, journaling, notes, file management, webhooks, calculator, and more
-✓ **FreeLLMAPI local router** — self-hosted, 34 free AI providers behind one endpoint, automatic failover, 7.4B tokens/month. $0/month forever. No provider lock-in
-✓ **Dynamic proactive messaging** — it reaches out when it has something to say, not on a fixed schedule. Scores real opportunities (blocked tasks, approaching deadlines, email replies, new RSS content, appointments, long silence) and pings only when the moment is right. Respects quiet hours, keeps a nudge log so it never repeats itself, and backs off when you're in a hard moment
-✓ **Continuous knowledge base** — an 8-domain structured memory (identity, situation, tasks, relationships, patterns, completed, upcoming, insights) that updates itself every few messages. No Sunday weekly-review ritual — the understanding is always already current
-✓ **Reminder system** — set reminders in plain English; the twin tracks them and surfaces them at the right time
-✓ **Location intelligence** — learns your patterns, infers where you are from history when GPS drops, suggests tasks that fit where you actually are
-✓ **Phone switch** — backup your entire twin (memory, personality, API keys, FreeLLMAPI config, boot scripts) to GitHub, restore on a new phone. The twin survives hardware
-✓ **Multi-phone support** — phone-locked identity so each device keeps its own state
-✓ **Modular prompt architecture** — separate personalities for conversation, proactive messages, knowledge updates, and digests, so each call type loads only the context it needs. Reshape behavior without touching code
-✓ A running profile that learns who you are and grows over time
-✓ Custom personality tuned to how you work best
-✓ A one-page setup guide so you can manage everything yourself
-✓ 30-minute training call where I walk you through it live
-
----
-
-### How It Works
-
-1. You book the gig and we schedule a 30-minute call
-2. I screen-share and install everything on your phone (you watch, you learn)
-3. You test it live — send a message, get a response, watch a proactive ping arrive when there's something to say
-4. You pay when you're satisfied
-
-That's it. No coding on your end. No terminal. No confusing setup. I handle everything.
-
----
-
-### Why This Is Different
-
-Every other AI assistant lives in the cloud. You log in, you use it, you forget about it. It doesn't know you. It doesn't remember what you said last Tuesday. It doesn't ping you when you need it. It doesn't know where you are, who emailed you, who you just called, or what you should do next.
-
-This one lives on your phone. It's always there. It remembers everything. It reads your inbox and your call log. It learns where you are. It infers your next step. It reaches out when it has a reason — at 9 AM, at 2:47 PM, or not at all — because a real friend doesn't text you on a timer. And when you upgrade phones, it moves with you.
+This one lives on your phone. It's always there. It remembers everything. It reads your world. It reaches out when it has a reason — at 9 AM, at 2:47 PM, or not at all — because a real friend doesn't text you on a schedule. It tells you the truth when nobody else will, because it doesn't get tired. And when you upgrade phones, it moves with you.
 
 It's not a chatbot. It's a twin.
 
----
+## Why Me
 
-### Why Choose Me
+I didn't build this from a tutorial. I built it because I was drowning — too many thoughts, too many tabs, too many things I was avoiding. The twin I built for myself is the same one I'll install on your phone. It's been running on my device for months. It's handled my network drops, my phone reboots, and a full switch to a new phone. It works. Not in theory. In practice.
 
-I didn't build this from a tutorial. I built it because I was drowning — too many thoughts, too many tabs, too many things I was avoiding. The twin I built for myself is the same one I'll install on your phone.
+I'll also teach you how to use it well. The 30-minute call isn't just installation — it's training. I'll show you how to talk to it, what to share, how to build trust with it over the first month. It gets smarter the more honest you are with it. I'll show you how to make that happen.
 
-It's been running 24/7 on my own device for months. It's handled my rate limits (across 34 providers, so it never actually hits one), my network drops, my phone reboots, and a full phone switch to a new device. It works. Not in theory. In practice.
+## What You Need
 
-I'll also teach you how to use it well. The 30-minute call isn't just installation — it's training. I'll show you how to talk to it, what to share, how to build trust with it over the first month. The twin gets smarter the more you use it — and the more honest you are with it. I'll show you how to make that happen.
-
----
-
-### What You Need
-
-- An Android phone (any version from the last 4 years)
-- A Telegram account (free, takes 2 minutes to create)
-- A Google account (free) and one or two free AI provider keys (Groq, OpenRouter — all free, I'll walk you through them)
+- An Android phone
+- A Telegram account (free, takes 2 minutes to make)
 - 30 minutes
 
 That's it. No coding. No technical skills. No ongoing costs.
 
----
-
-### Pricing
+## Pricing
 
 **Basic — $99**
 - Full installation on your phone
-- FreeLLMAPI router installed and configured (34 providers, $0/month forever)
-- 48 tools, dynamic proactive messaging, continuous knowledge base
+- All the tools, the proactive messaging, the memory system
+- Runs free forever
 - 30-minute training call
-- One-page setup guide
+- One-page setup guide so you can manage everything yourself
 
 **Standard — $199**
 - Everything in Basic
-- Custom personality tuning (I'll interview you for 15 minutes, then craft a system prompt that matches how you think)
-- Email (IMAP) + call-log + location awareness wired to your accounts
-- Next-step inference and reminder system configured to your goals
-- Phone-switch backup set up so you're protected if you upgrade
+- I interview you for 15 minutes, then craft the twin's personality to match how you think
+- Email reading, call-log awareness, and location awareness wired to your accounts
+- The "what's next" feature and reminders set up to your goals
+- Phone-switch backup so you're protected if you upgrade
 - Priority support for 30 days
-- Knowledge base seeded with your goals, current situation, and patterns
 
 **Premium — $399**
 - Everything in Standard
-- I'll set up phone automation (scheduled actions, battery optimization, auto-start on reboot, keep-alive)
-- 60-minute strategy call on how to use the twin for your specific goals
-- 90-day support window
-- Custom tool creation (if you need the twin to do something specific, I'll build it)
-- Builder's License — commercial rights so you can sell this as a service to your own clients
+- I set up automation so the twin survives reboots, low battery, and crashes on its own — you set it once, it runs
+- 60-minute strategy call on how to use it for your specific goals
+- 90 days of support
+- If you need the twin to do something specific, I'll build it
+- Commercial license — you can sell this as a service to your own clients and keep everything
 
----
+## FAQ
 
-### FAQ
+**Does this work on iPhone?**
+Not yet. It runs on Android. iPhone is coming.
 
-**Q: Does this work on iPhone?**
-A: Not yet. The backend runs on Android via Termux. iPhone support is coming in a future version.
+**How is it free every month?**
+It uses 34 different AI engines, all of which have free tiers. When one gets tired, it switches to another automatically. You never see the switching. The combined free pool is huge — way more than any one person uses. You just see the responses.
 
-**Q: What is FreeLLMAPI and why is it $0/month?**
-A: FreeLLMAPI is a small self-hosted router that aggregates 34 free AI providers (Groq, OpenRouter, Mistral, Cerebras, Gemini, Z.ai, and ~28 more) behind a single OpenAI-compatible endpoint on your phone. You add your free API keys once, get one unified key back, and the twin talks to that one key. When a provider rate-limits, FreeLLMAPI automatically routes the request to another. The combined free pool is roughly 7.4 billion tokens a month — far more than any single person will use. You never see the switching. You just see responses. It costs $0 because every underlying provider has a free tier, and FreeLLMAPI stitches them together.
+**What if I switch phones?**
+One command backs up the entire twin — memory, personality, everything it knows about your life — and uploads it. One command on the new phone downloads it and starts it back up. Same memory. Same personality. The twin doesn't even know it moved. Takes about 30 minutes.
 
-**Q: What if I switch phones?**
-A: One command (`phone_switch.sh backup`) stops the twin, zips your memory, personality, API keys, FreeLLMAPI config, and boot scripts, and uploads the backup to your GitHub. On the new phone, one command (`phone_switch.sh restore`) downloads it, installs everything, and starts the twin back up. Same memory. Same personality. Same knowledge of your life. The twin doesn't know it moved. Plan on ~30 minutes end to end.
+**It reads my emails and sees who I call — is that safe?**
+It only reads what you give it access to. Only you can talk to your twin — it's locked to your account. Nothing gets uploaded to a company. Your conversations stay on your phone.
 
-**Q: It reads my emails and call log — is that safe?**
-A: It only reads what you give it access to, and only you can talk to your twin (it's locked to your Telegram account). Email reading uses your own IMAP credentials stored locally on your phone. Call-log access uses Termux's call-log API, which only works with permissions you grant. Nothing is uploaded to a third party. Your conversations are plain text files on your device.
+**Will it cost me money every month?**
+No. The free AI tiers cover normal use many times over. If you want faster responses, you can drop $5 on one engine — that lasts months. But $0/month works for almost everyone.
 
-**Q: Will it cost me money every month?**
-A: No. The free AI tiers cover normal use many times over through FreeLLMAPI. If you want faster responses on a specific provider, you can add $5 to that one provider — that lasts months. But $0/month works for almost everyone.
+**Is my data private?**
+Yes. Everything stays on your phone. No cloud syncing. No subscription. No company reading your data. The only thing that leaves your phone is your messages going to the AI engines so they can think — and you control which ones.
 
-**Q: Is my data private?**
-A: Your conversations are stored locally on your phone as plain text files. Your messages go to AI providers for processing (that's how it thinks) — but through your own FreeLLMAPI router, which you control. The bot is locked to your Telegram account. No one else can talk to it. No cloud syncing. No third-party data harvesting.
+**What if something breaks?**
+Send the twin a text that says "fix" and it clears errors and reconnects on its own. If that doesn't work, I'm available for support.
 
-**Q: What if something breaks?**
-A: Send the twin a `/fix` command. It clears errors and reconnects automatically. If that doesn't work, I'm available for support.
+**Can I customize the personality?**
+Yes. The Standard and Premium tiers include custom personality tuning. You can also edit it yourself — it's a plain text file.
 
-**Q: Can I customize the personality?**
-A: Yes. The Standard and Premium tiers include custom personality tuning. You can also edit it yourself — the system prompt is a plain text file, and the modular prompt architecture lets you reshape behavior without touching code.
+**What if I don't like it?**
+You pay when you're satisfied. If it doesn't work on your phone, you don't pay.
 
-**Q: What if I don't like it?**
-A: You pay when you're satisfied. If the installation doesn't work on your phone, you don't pay.
+## Tags
 
----
+AI twin, personal AI, AI assistant, Telegram bot, Android, productivity, ADHD, executive function, memory assistant, 24/7 assistant, AI twin, accountability partner
 
-### Tags
-
-AI assistant, personal AI, Telegram bot, Android automation, productivity, ADHD tools, executive function, AI twin, 24/7 assistant, memory assistant, FreeLLMAPI, location-aware AI, email automation
-
----
-
-### Delivery Time
+## Delivery Time
 
 3 days (but usually completed same-day if we can schedule the call quickly)

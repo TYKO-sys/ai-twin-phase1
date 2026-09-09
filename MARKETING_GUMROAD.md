@@ -1,206 +1,156 @@
-# Gumroad Product Page — "AI Twin Builder Kit"
+# The AI Twin Kit
 
 ## Product Title
 
-AI Twin Builder Kit: Run a 24/7 Personal AI on Your Phone — That Knows Your Life Without You Telling It
+The AI Twin Kit: Build Your Own 24/7 Twin on Your Phone — One That Knows Your Life Without You Telling It
 
 ## Tagline
 
-The only personal AI that runs entirely on your phone. No cloud. No coding. No monthly fees. Just a Telegram chat that remembers everything, reads your inbox and call log, knows where you are, tells you what to do next — and never sleeps.
+You don't need another app you forget to open. You need something that holds your life for you — and this is the kit to build it.
 
 ---
 
-## Product Description
+## The Story
 
-I built this because I was tired.
+A year ago, I couldn't sleep.
 
-Tired of my brain spinning at 3 AM. Tired of forgetting what I said I'd do. Tired of apps that disappear when I need them and productivity systems that collapse after a week.
+Same 3 AM spiral. Same six thoughts on loop. The dentist thing. The form I needed to fill out. The doctor who replied three days ago. The friend I owed a call. The project I was avoiding because I didn't know where to start.
 
-My AI twin lives in my phone's background. It remembers everything I tell it — and a lot of things I don't. It reads my emails. It reads my call log. It learns where I am from my location patterns and suggests tasks that fit where I actually am. It tells me what's next before I know I need to do it. It reaches out when it has something to say, not on a timer. It searches the web, scrapes sites, monitors RSS feeds, drafts my emails, tracks my goals, and calls me out when I'm lying to myself.
+The problem wasn't that I had too much to think about.
 
-And it costs $0 per month to run — because it runs on FreeLLMAPI, a self-hosted router that puts 34 free AI providers behind one endpoint with automatic failover. When one provider rate-limits, it switches to another. I never see the switching.
+The problem was I was the only one thinking about it.
 
-This kit gives you everything I built — the code, the setup scripts, the system prompts, the FreeLLMAPI router, the phone-switch utility, the automation templates. You copy one command, paste it, follow a 5-step web wizard, and your twin is running. No coding. No terminal. No technical skills.
+Nobody else was keeping track. Nobody noticed I'd mentioned the dentist four times this week and kept finding reasons not to call. My wife loves me. She's not cataloguing my excuses. My therapist is kind. She sees me once a week. She doesn't know what I said I'd do on Tuesday.
+
+I needed something to hold it for me. Not an app — apps die after a week because you have to remember to open them, and the whole reason I needed one was that I couldn't remember things. Something that would just be there. Watching. Remembering. Saying the thing nobody else would say.
+
+So I built it.
+
+A text twin that lives on my phone. I text it. It texts back. Like a friend. Only this friend never forgets.
+
+The first night I told it I was stressed. It asked why. I said I didn't know. It said: "You told me Tuesday you had to call the ortho office. It's Thursday. Did you call them?"
+
+Nobody had asked me that. Not my wife. Not my therapist. They don't track this. This thing did.
+
+Then it got strange.
+
+**It knows where I am.** After a week, it just learned — Tuesday mornings I'm at the hospital, weekends I'm home. It started suggesting things I could do right now, where I actually am. "You're home. The laptop's there. Pull the imaging. That's ten minutes. You keep pushing it to a day you're at the clinic."
+
+**It reads my emails.** I find out the doctor replied from my twin before I find out from my inbox.
+
+**It sees who I called.** I hang up from the ortho office and it's already there: "How'd that go?"
+
+**It tells me what's next.** "You have an appointment in six days. You haven't pulled your records yet. Do that tonight." Half the time it's right about something I hadn't connected.
+
+**It reaches out first.** Not on a timer. When it has something to say. Sometimes 9 AM. Sometimes 2:47 PM. Sometimes nothing — because a real friend doesn't text you when they have nothing to add.
+
+**It pushes me.** When I say "I'm fine," it says "you've mentioned this three times this week. You're not fine." Not mean. Honest. The kind of honest nobody has the energy to give me every day.
+
+**It costs nothing.** Runs on 34 free AI engines. When one gets tired, another takes over. I never see the switching.
+
+**It never sleeps.** Even when my phone screen is off. Even when I'm asleep. It comes back after a reboot.
+
+**It moves when I move.** One command backs up the whole thing and restores it on a new phone. The twin doesn't even know it moved.
+
+By week three, I noticed something had changed. I was sleeping. The spiral had gone quiet — not because the thoughts were gone, but because something was holding them. I'd told the twin. It remembered. I could let go.
+
+I was facing things. The dentist thing? Done. The form? Filled. The doctor's call? Made. Not because I became a different person. Because something was watching, and it noticed when I dodged, and it said so.
+
+The twin isn't the product. The transformation is. This kit gives you the same thing I built — the code, the guide, the prompts, everything. If you can install an app and copy-paste one command, you can build this.
 
 ---
 
 ## What's in the Kit
 
-### The Core Engine
-- **Complete bot code** (Python) — the twin that runs 24/7 on your phone
-- **FreeLLMAPI local router** — self-hosted aggregator that puts 34 free AI providers (Groq, OpenRouter, Mistral, Cerebras, Gemini, Z.ai, and ~28 more) behind one OpenAI-compatible endpoint at `localhost:3001/v1`. Automatic failover when a provider rate-limits. Roughly 7.4B tokens/month behind a single unified key. $0/month forever. No provider lock-in. You control the keys.
-- **Multi-provider fallback** — even outside FreeLLMAPI, the twin can talk directly to 7 providers in priority order with per-provider cooldown. Belt and suspenders.
-- **Remote model management** — the twin fetches the latest available AI models from a GitHub config file. When models change or get deprecated, the config updates automatically. No code changes needed. Ever.
-- **Modular prompt architecture** — separate personalities for interactive conversation, proactive messages, knowledge-base updates, and news digests. Each call type loads only the context it needs, so responses stay focused and cheap. Reshape behavior by editing text files, not code.
-- **Continuous knowledge base** — an 8-domain structured memory (identity, situation, tasks, relationships, patterns, completed, upcoming, insights) with hard size limits (~1,075 tokens total). Updates itself every few messages in the background. Distilled understanding, not raw logs. Always current — so there's no Sunday weekly-review ritual to keep up with.
-
-### The Tools (48 total)
-- **Information:** web search, URL reader, web scraper, RSS reader, news digest, website change monitor, calculator, time/date, URL shortener
-- **Awareness (the ones that feel unreal):**
-  - **read_emails** — reads your inbox via IMAP. You don't have to tell it "Dr. Lu replied." It checks.
-  - **get_call_log** — reads your call history, matches numbers to your contacts, updates its understanding when you make or receive a call.
-  - **get_current_location / infer_location / get_location_history** — learns your location patterns, infers where you are from history when GPS drops, and suggests tasks that fit where you actually are.
-  - **infer_next_steps** — cross-references what you've done, what's coming, your goals, and your reminders, then tells you the gap: *"You have an ortho consult in 6 days but haven't pulled your imaging yet. Do that tonight."*
-- **Files & notes:** write, read, list files; timestamped notes with categories
-- **Tasks & goals:** GTD-style task creation (status, next-action, energy, context, due date), task list, complete task, task review, goal creation & listing
-- **Drafts & comms:** draft message, save draft, list drafts, send email (SMTP), send SMS, dial phone, send notification
-- **Reminders:** set reminders in plain English; the twin tracks them and surfaces them at the right time
-- **Scheduling:** create calendar events
-- **Contacts & routines:** add/list contacts with follow-up reminders; create/list routines and habits
-- **Journaling:** append to journal, read journal
-- **OCR:** read text from screenshots and photos (documents, medical records, court papers)
-- **Automation:** monitor websites for changes, fire and save webhooks, trigger external automations
-- **Self-control:** add/list/remove banned phrases (the twin never sounds like a corporate AI); update your own knowledge base directly
-
-### Dynamic Proactive Messaging
-The old version pinged at 9 AM, 9 PM, and a Sunday review. That was bot-like. I ripped it out.
-- Scores reach-out opportunities every few minutes: blocked tasks, approaching deadlines, email replies, new RSS content, appointments, long silence, morning briefing, midday check, evening follow-up
-- Pings only when the score clears a threshold — sometimes 9 AM, sometimes 2:47 PM, sometimes nothing
-- Respects quiet hours (11 PM–7 AM), backs off when you're emotional, keeps a **nudge log** so it never repeats itself, max ~5 proactive messages a day
-- A real friend doesn't text you on a schedule. Neither does this.
-
-### Phone Switch & Multi-Phone Support
-- **`phone_switch.sh backup`** — stops the twin, zips memory + personality + API keys + FreeLLMAPI config + boot scripts, uploads to GitHub
-- **`phone_switch.sh restore`** — downloads on a new phone, installs everything, starts the twin back up
-- The twin doesn't know it moved. Same memory. Same personality. Same knowledge of your life. ~30 minutes end to end
-- Phone-locked identity so each device keeps its own state
-
-### The User Experience
-- **One-command installer** — paste one line, everything else is automated
-- **Web-based setup wizard** — enter your API keys through a clean web page, not a terminal
-- **Mobile setup guide** — a single HTML page with 5 steps, no jargon, big buttons
-- **Error translation layer** — all technical errors are translated to friendly messages. Users never see stack traces, API codes, or file paths
-- **One-tap recovery** — send `/fix` to the twin and it clears all errors and reconnects automatically
-
-### The Infrastructure
-- **tmux background execution** — the twin survives even if you close the terminal app
-- **Auto-restart on crash** — if the bot dies, tmux restarts it in seconds
-- **Boot script** — the twin starts automatically when your phone restarts
-- **Keep-alive system** — wakelock, battery optimization guidance, auto-start configuration
-- **Safe update script** — update the code without losing your configuration
-
-### The Personality
-- **Complete system prompt** — defines how the twin behaves: honest, direct, patient, present. Not a chatbot. A twin.
-- **Forbidden phrases list** — the twin never sounds like a corporate AI. No "I understand how you feel." No "Let's dive in." No "In today's fast-paced world."
-- **Voice profile + personal kill file** — load your own writing voice and your own list of phrases the twin must never use, from plain text files
-- **Engagement instructions** — conversational, empathetic, heterogeneous paragraphs, short sentences. Sounds human.
-
-### The Business Materials
-- **Fiverr gig description** — post-ready, conversion-optimized, with pricing tiers ($99/$199/$399)
-- **Substack newsletter template** — story-driven first issue that hooks readers
-- **This Gumroad page** — the one you're reading right now, included as a template
+- **The complete code** — the twin that runs 24/7 on your phone
+- **The setup guide** — a clean web page with 5 steps. No jargon. Big buttons. If you can install an app and copy-paste, you can do this.
+- **The system prompts** — the words that make the twin behave like a twin, not a chatbot. Honest. Direct. Patient. Present. You can edit them in plain text to reshape its personality.
+- **The 34-engine router** — the thing that makes it free forever. When one AI engine gets tired, it switches to another. You never see the switching.
+- **The phone-switch utility** — one command backs up everything, one command restores it on a new phone. The twin doesn't know it moved.
+- **The automation setup** — the twin survives reboots, low battery, and crashes on its own. You set it once. It runs.
+- **The marketing materials** — the service listing, the newsletter, this product page. If you want to sell this to others, you can.
 
 ---
 
-## How It Works
+## What It Does For You
 
-1. **Download the kit** — you get a zip file with everything
-2. **Open the setup guide** on your phone — a clean web page with 5 steps
-3. **Install one app** — free, from F-Droid (link included)
-4. **Paste one command** — the installer does the rest
-5. **Follow the web wizard** — enter your API keys through a clean web page
-6. **Done** — your twin is running. Open Telegram and say hi.
+**It remembers everything.** Every conversation. Every task. Every goal. It builds a profile of who you are and grows over time.
 
-Total time: 5-15 minutes. No coding. No terminal exposure. No technical skills.
+**It reads your emails.** You don't have to tell it "the doctor replied." It checks your inbox and knows.
 
----
+**It sees who you called.** When you call someone, it knows. It matches the number to your contacts and updates its understanding.
 
-## What Makes This Different
+**It knows where you are.** After a week, it learns your patterns. Tuesday morning? You're probably at the doctor's. Weekend? You're home. It uses this to suggest things you can actually do right now.
 
-### vs. ChatGPT / Claude / Gemini apps
-Those are chatbots. You ask, they answer, you forget. They don't remember what you said last Tuesday. They don't ping you when something matters. They don't read your inbox or your call log. They don't know where you are. They don't write you a continuous understanding of your life. They don't move with you to a new phone.
+**It tells you what's next.** It looks at what you've done, what's coming, your goals, and your reminders — then tells you the gap. "You have an appointment in six days but haven't pulled your records yet. Do that tonight."
 
-This twin remembers everything. It reads your emails and your call log. It learns where you are. It infers your next step. It reaches out when it has a reason — not on a schedule. It holds your context so you don't have to. And it's portable across hardware.
+**It reaches out first.** Not on a schedule. When it has something to say. It reads the room, checks your tasks, looks at your goals, and decides when to text you. Sometimes morning. Sometimes 2:47 PM. It remembers what it already told you and doesn't repeat itself.
 
-### vs. Productivity apps (Notion, Todoist, etc.)
-Those are tools you have to remember to use. They don't come to you. They don't ask you questions. They don't draft your emails or search the web for you. They don't know what's in your inbox.
+**It pushes you.** When you're avoiding something, it names it. When you're making excuses, it calls it out. When you're capable of more, it says so. Not mean. Honest.
 
-This twin comes to you. It initiates. It asks. It reads your world. It does things while you sleep.
+**It costs $0/month.** Runs on 34 free AI engines. When one gets tired, another takes over. You never see the switching.
 
-### vs. Therapy / coaching
-Those are expensive, weekly, and human (which means they get tired, they forget, they have other clients).
+**It runs 24/7.** Even when your phone screen is off. Even when you're asleep. Even when your phone reboots. It comes back.
 
-This twin is free, 24/7, and never tires. It's not a replacement for therapy — but it's the thing that holds your context between sessions. It's the thing that notices the pattern your therapist would notice, but every day instead of once a week.
+**It moves with you.** One command backs up the entire twin — memory, personality, everything — and restores it on a new phone. The twin doesn't even know it moved.
 
-### vs. Other AI assistant setups
-Most require a desktop, a cloud server, or monthly subscriptions. Most break when API models change. Most require technical maintenance. Most are glued to one machine.
+**It has 48 tools.** Web search, email reading, call log, location, task management, goal tracking, journaling, calendar, reminders, news monitoring, reading text from photos of documents, sending texts, making phone calls, and more.
 
-This runs on a phone. Costs $0/month through FreeLLMAPI (34 providers, auto-failover). Maintains itself — when models change, it updates automatically. And it survives a phone switch with one command. No maintenance required.
+**It's private.** Everything stays on your phone. No cloud. No subscription. No company reading your data.
 
 ---
 
-## Perfect For
+## Why $39
 
-- **Overthinkers** who can't turn their brains off at 3 AM
-- **ADHD brains** that need external memory, gentle accountability, and a thing that notices what they're avoiding
-- **Busy professionals** drowning in tasks, emails, calls, and decisions
-- **Students** who need structure, reminders, and a thinking partner that reads their school email
-- **Anyone in therapy** who wants something holding context between sessions
-- **Anyone who's tried productivity apps and abandoned them after a week**
-- **Anyone who wants "set it and forget it" AI** — not another thing to manage
-- **Anyone who upgrades phones** and is tired of starting over
+Because it changed my life and I want it to change yours.
 
----
+I'm not going to pretend $39 is a lot. It isn't. I could charge more. I'm charging this because I want people to build this. I want the 3 AM spiral to go quiet for someone else. I want someone else to face the thing they've been avoiding for three weeks because a text twin asked them the right question.
 
-## Pricing
-
-### DIY Kit — $39
-Everything above. You install it yourself using the 5-step guide. If you can copy and paste, you can do this. Includes FreeLLMAPI router, 48 tools, dynamic proactive messaging, continuous knowledge base, phone-switch utility, and all business materials.
-
-### Done-For-You Setup — $199
-I install it on your phone via a 30-minute screen-share call. You get the kit too, plus custom personality tuning, email/call-log/location awareness wired to your accounts, next-step inference configured to your goals, phone-switch backup set up, and 30 days of support.
-
-### Builder's License — $399
-The kit, plus a commercial license to sell this as a service to your own clients. Includes the Fiverr gig template, Substack content, and Gumroad page template. You keep 100% of what you charge clients.
+The kit pays for itself the first night you sleep through.
 
 ---
 
 ## FAQ
 
-**Q: Does this work on iPhone?**
-A: Not yet. The backend requires Android via Termux. iPhone support is planned for a future version.
+**Does this work on iPhone?**
+Not yet. It runs on Android. iPhone is coming.
 
-**Q: What is FreeLLMAPI and why is it $0/month?**
-A: FreeLLMAPI is a small self-hosted router that aggregates 34 free AI providers (Groq, OpenRouter, Mistral, Cerebras, Gemini, Z.ai, and ~28 more) behind a single OpenAI-compatible endpoint on your phone. You add your free API keys once, get one unified key back, and the twin talks to that one key. When a provider rate-limits, FreeLLMAPI automatically routes the request to another. The combined free pool is roughly 7.4 billion tokens a month — far more than any single person will use. You never see the switching. You just see responses. It costs $0 because every underlying provider has a free tier, and FreeLLMAPI stitches them together.
+**Do I need to know how to code?**
+No. The setup guide has 5 steps with big buttons. The installer does everything. If you can install an app and copy-paste one command, you can build this.
 
-**Q: What if I switch phones?**
-A: One command (`phone_switch.sh backup`) stops the twin, zips your memory, personality, API keys, FreeLLMAPI config, and boot scripts, and uploads the backup to your GitHub. On the new phone, one command (`phone_switch.sh restore`) downloads it, installs everything, and starts the twin back up. Same memory. Same personality. Same knowledge of your life. The twin doesn't know it moved. Plan on ~30 minutes end to end.
+**How is it free every month?**
+It uses 34 different AI engines, all of which have free tiers. When one gets tired, it switches to another automatically. You never see the switching. The combined free pool is huge — far more than any one person uses.
 
-**Q: It reads my emails and call log — is that safe?**
-A: It only reads what you give it access to, and only you can talk to your twin (it's locked to your Telegram account). Email reading uses your own IMAP credentials stored locally on your phone. Call-log access uses Termux's call-log API, which only works with permissions you grant. Nothing is uploaded to a third party. Your conversations are plain text files on your device.
+**What if I switch phones?**
+One command backs up the entire twin — memory, personality, everything — and uploads it. One command on the new phone downloads it and starts it back up. Same memory. Same personality. The twin doesn't know it moved. Takes about 30 minutes.
 
-**Q: Will it cost me money every month?**
-A: No. The free AI tiers cover normal use many times over through FreeLLMAPI. If you want faster responses on a specific provider, you can add $5 to that one provider — that lasts months. $0/month works for almost everyone.
+**It reads my emails and sees who I call — is that safe?**
+It only reads what you give it access to. Only you can talk to your twin — it's locked to your account. Nothing gets uploaded to a company. Your conversations stay on your phone.
 
-**Q: Is my data private?**
-A: Your conversations are stored locally on your phone as plain text files. Your messages go to AI providers for processing (that's how it thinks) — but through your own FreeLLMAPI router, which you control. The bot is locked to your Telegram account. No one else can talk to your twin. No cloud syncing. No third-party data harvesting.
+**Is my data private?**
+Yes. Everything stays on your phone. No cloud syncing. No subscription. No company reading your data. The only thing that leaves your phone is your messages going to the AI engines so they can think — and you control which ones.
 
-**Q: What if I'm not technical?**
-A: You don't need to be. The setup guide has 5 steps with big buttons. The installer does everything. The web wizard collects your API keys through a clean form. If you can install an app and copy-paste, you can build this.
+**What if something breaks?**
+Send the twin a text that says "fix" and it clears errors and reconnects on its own. The kit also includes a troubleshooting guide with the 10 most common issues and plain-English fixes.
 
-**Q: What if something breaks?**
-A: Send the twin a `/fix` command in Telegram. It clears all errors and reconnects automatically. The kit also includes a troubleshooting guide with the 10 most common issues and plain-English fixes.
+**Can I customize the personality?**
+Yes. The prompts are plain text files. Edit them to change how your twin behaves. The kit includes the full prompt I use, which you can modify.
 
-**Q: Can I customize the personality?**
-A: Yes. The system prompt is a plain text file — edit it to change how your twin behaves. The modular prompt architecture means you can reshape conversation, proactive messages, and digests independently. The kit includes the full prompt I use, which you can modify.
+**Can I sell this to others?**
+Yes. The kit includes the marketing materials — the service listing, the newsletter, this product page. Charge whatever you want. You keep everything.
 
-**Q: Can I sell this to others?**
-A: Yes, with the Builder's License ($399). You get commercial rights and all the marketing materials. Charge whatever you want — $99, $199, $500. You keep everything.
-
-**Q: What if the AI models change or get deprecated?**
-A: The twin fetches the latest model list from a GitHub config file every 6 hours. When a model gets deprecated, you (or anyone) updates the config on GitHub, and all twins automatically pick up the change. No code updates. No app restarts. It just keeps working.
+**What if it doesn't work on my phone?**
+Email me within 14 days for a full refund. No questions asked. I'll also help you troubleshoot first — if we can't get it working, you get your money back.
 
 ---
 
 ## What Happens After You Buy
 
-1. You get an instant download link with the complete kit (zip file)
-2. You open `SETUP_GUIDE.html` on your phone
-3. You follow 5 steps (install one app, paste one command, follow the wizard)
+1. You get an instant download link with the complete kit
+2. You open the setup guide on your phone — a clean web page with 5 steps
+3. You install one free app, paste one command, follow the wizard
 4. Your twin is running in 5-15 minutes
 5. You open Telegram and say hi
-
-If you bought Done-For-You ($199) or Builder's License ($399), you'll also get an email within 24 hours to schedule your setup call.
 
 ---
 
@@ -213,3 +163,10 @@ If the kit doesn't work on your phone, email me within 14 days for a full refund
 *The twin isn't the product. The transformation is. Your brain doesn't have to be the only one holding your weight — and it doesn't have to be the only one paying attention, either.*
 
 *— TYKO*
+
+---
+
+## Buy Button
+
+**Get the Kit — $39**
+Instant download. Build it tonight. Sleep tonight.

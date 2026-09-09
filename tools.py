@@ -357,6 +357,44 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "update_task",
+        "description": "Update an existing task (status, blocked_on, next_action, priority, due_date, notes). Uses fuzzy matching to find the task by ID, title, or partial title.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Task ID, title, or partial title (fuzzy match)"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "New status (active, blocked, waiting, done)"
+                },
+                "blocked_on": {
+                    "type": "string",
+                    "description": "What the task is blocked on"
+                },
+                "next_action": {
+                    "type": "string",
+                    "description": "The next physical step"
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "New priority"
+                },
+                "due_date": {
+                    "type": "string",
+                    "description": "New due date"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Additional notes to append"
+                }
+            },
+            "required": ["identifier"]
+        }
+    },
+    {
         "name": "get_current_time",
         "description": (
             "Get the current date and time. Useful for scheduling, "
@@ -1336,57 +1374,120 @@ def tool_list_tasks(include_completed: bool = False) -> str:
 
 
 def tool_complete_task(identifier: str) -> str:
-    """Mark a task as completed by title or index number.
+    """Mark a task as complete.
 
-    Updates both the legacy 'completed' boolean and the new 'status' field
-    so old and new code paths stay in sync.
+    Args:
+        identifier: Task ID number, title, or partial title (fuzzy match)
     """
     try:
         tasks = _load_tasks()
+        if not tasks:
+            return "No tasks found."
 
-        # Helper: is this task "open" (not done) by either field?
-        def _is_open(t):
-            s = t.get("status", "")
-            if s == "done":
-                return False
-            if s and s != "active":
-                # blocked/waiting/someday are technically open
-                return True
-            # No status or active — fall back to legacy 'completed'
-            return not t.get("completed", False)
+        identifier_lower = identifier.lower().strip()
 
-        # Try to match by index number (1-based, among OPEN tasks)
-        try:
-            idx = int(identifier) - 1
-            count = 0
-            for task in tasks:
-                if _is_open(task):
-                    if count == idx:
-                        now_iso = datetime.now().isoformat()
-                        task["completed"] = True
-                        task["completed_at"] = now_iso
-                        task["status"] = "done"
-                        _save_tasks(tasks)
-                        return f"Completed: {task['title']}"
-                    count += 1
-            return f"Task #{identifier} not found (or already completed)."
-        except ValueError:
-            pass
-
-        # Try to match by title (case-insensitive, partial match)
-        identifier_lower = identifier.lower()
-        for task in tasks:
-            if _is_open(task) and identifier_lower in task["title"].lower():
-                now_iso = datetime.now().isoformat()
-                task["completed"] = True
-                task["completed_at"] = now_iso
-                task["status"] = "done"
+        # Try exact ID match first
+        for i, t in enumerate(tasks):
+            if str(t.get("id", "")) == identifier or str(i + 1) == identifier:
+                t["completed"] = True
+                t["status"] = "done"
+                t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 _save_tasks(tasks)
-                return f"Completed: {task['title']}"
+                return f"Completed: {t.get('title', 'unknown')}"
 
-        return f"No pending task matching '{identifier}' found."
+        # Try exact title match
+        for i, t in enumerate(tasks):
+            title = t.get("title", "").lower()
+            if title == identifier_lower:
+                t["completed"] = True
+                t["status"] = "done"
+                t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                _save_tasks(tasks)
+                return f"Completed: {t.get('title', 'unknown')}"
+
+        # FUZZY MATCH: check if identifier is a substring of the title
+        # or if the title is a substring of the identifier
+        for i, t in enumerate(tasks):
+            title = t.get("title", "").lower()
+            if identifier_lower in title or title in identifier_lower:
+                # Skip already completed tasks
+                if t.get("status") in ("done", "completed") or t.get("completed"):
+                    continue
+                t["completed"] = True
+                t["status"] = "done"
+                t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                _save_tasks(tasks)
+                return f"Completed: {t.get('title', 'unknown')} (fuzzy match on '{identifier}')"
+
+        # KEYWORD MATCH: check if any word in the identifier appears in the title
+        identifier_words = [w for w in identifier_lower.split() if len(w) > 3]
+        for i, t in enumerate(tasks):
+            if t.get("status") in ("done", "completed") or t.get("completed"):
+                continue
+            title = t.get("title", "").lower()
+            matching_words = [w for w in identifier_words if w in title]
+            if len(matching_words) >= 2:  # At least 2 words match
+                t["completed"] = True
+                t["status"] = "done"
+                t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                _save_tasks(tasks)
+                return f"Completed: {t.get('title', 'unknown')} (keyword match on {matching_words})"
+
+        return f"No pending task matching '{identifier}'. Use list_tasks to see all tasks."
     except Exception as e:
-        return f"Complete task failed: {type(e).__name__}: {e}"
+        return f"Error completing task: {type(e).__name__}: {e}"
+
+
+def tool_update_task(identifier: str, status: str = "", blocked_on: str = "",
+                     next_action: str = "", priority: str = "",
+                     due_date: str = "", notes: str = "") -> str:
+    """Update an existing task. Use fuzzy matching to find the task.
+
+    Args:
+        identifier: Task ID, title, or partial title
+        status: New status (active, blocked, waiting, done)
+        blocked_on: What the task is blocked on
+        next_action: The next physical step
+        priority: New priority
+        due_date: New due date
+        notes: Additional notes
+    """
+    try:
+        tasks = _load_tasks()
+        if not tasks:
+            return "No tasks found."
+
+        identifier_lower = identifier.lower().strip()
+
+        # Find the task (same 4-tier matching as complete_task)
+        for i, t in enumerate(tasks):
+            title = t.get("title", "").lower()
+            matched = False
+
+            if str(t.get("id", "")) == identifier or str(i + 1) == identifier:
+                matched = True
+            elif title == identifier_lower:
+                matched = True
+            elif identifier_lower in title or title in identifier_lower:
+                matched = True
+
+            if matched:
+                if status: t["status"] = status
+                if status == "done":
+                    t["completed"] = True
+                    t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                if blocked_on: t["blocked_on"] = blocked_on
+                if next_action: t["next_action"] = next_action
+                if priority: t["priority"] = priority
+                if due_date: t["due_date"] = due_date
+                if notes: t["notes"] = (t.get("notes", "") + "\n" + notes).strip() if notes else t.get("notes", "")
+
+                _save_tasks(tasks)
+                return f"Updated: {t.get('title', 'unknown')} — status: {t.get('status', '?')}"
+
+        return f"No task matching '{identifier}'. Use list_tasks to see all tasks."
+    except Exception as e:
+        return f"Error updating task: {type(e).__name__}: {e}"
 
 
 def tool_task_review() -> str:
@@ -3728,6 +3829,7 @@ _TOOL_FUNCTIONS = {
     "create_task": tool_create_task,
     "list_tasks": tool_list_tasks,
     "complete_task": tool_complete_task,
+    "update_task": tool_update_task,
     "get_current_time": tool_get_current_time,
     "calculator": tool_calculator,
     "append_to_journal": tool_append_to_journal,

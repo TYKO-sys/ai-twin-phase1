@@ -62,40 +62,53 @@ print_ok "Stopped twin and FreeLLMAPI"
 # ------------------------------------------------------------
 print_step "Step 2: Pull latest code from GitHub (phase2)"
 
-# Require token via env var (never hardcode secrets in the repo)
-if [ -z "$TOKEN" ]; then
-  print_err "GITHUB_TOKEN (or GH_TOKEN) env var is empty - set it before running this script."
-  print_warn "Example: export GITHUB_TOKEN='github_pat_...' && ./final_update.sh"
-  exit 1
-fi
-
-# Get out of any deleted folder
-cd ~
-
-# Save .env to permanent storage BEFORE wiping ~/ai-twin
+# Save .env to permanent storage BEFORE doing anything
 if [[ -f ~/ai-twin/.env ]]; then
     mkdir -p ~/ai-twin-memory
     cp ~/ai-twin/.env ~/ai-twin-memory/env_backup.txt
-    print_ok "Saved .env to permanent storage before wipe"
+    print_ok "Saved .env to permanent storage"
 fi
 
-# Remove old ai-twin folder (clean slate)
-rm -rf ~/ai-twin 2>/dev/null
+# Update the code in-place (preserves .env, which is in .gitignore)
+if [[ -d ~/ai-twin/.git ]]; then
+    # Repo exists — pull latest
+    cd ~/ai-twin
+    git fetch origin phase2
+    git reset --hard origin/phase2
+    print_ok "Code updated in-place (preserved .env)"
+else
+    # Fresh clone (no existing repo)
+    cd ~
+    git clone --branch phase2 --depth 1 "$REPO_URL" ~/ai-twin 2>&1 | tail -2
+    print_ok "Fresh clone (no existing repo)"
+fi
 
-# Clone fresh from phase2
-git clone --branch phase2 --depth 1 "$REPO_URL" ~/ai-twin 2>&1 | tail -2
+# Verify .env still exists
+if [[ -f ~/ai-twin/.env ]]; then
+    print_ok ".env preserved ($(wc -c < ~/ai-twin/.env) bytes)"
+else
+    print_warn ".env missing — restoring from backup"
+    if [[ -f ~/ai-twin-memory/env_backup.txt ]]; then
+        cp ~/ai-twin-memory/env_backup.txt ~/ai-twin/.env
+        print_ok ".env restored from permanent backup"
+    elif [[ -f "$HOME/.env.backup" ]]; then
+        cp "$HOME/.env.backup" ~/ai-twin/.env
+        print_ok ".env restored from home backup"
+    else
+        print_err ".env NOT FOUND and no backup exists!"
+    fi
+fi
+
 chmod +x ~/ai-twin/*.sh ~/ai-twin/diagnostic.py 2>/dev/null
-print_ok "Latest code cloned from phase2"
 
 # Show latest commit
-LATEST_COMMIT=$(cd ~/ai-twin && git log -1 --oneline 2>/dev/null | head -1)
+cd ~/ai-twin
+LATEST_COMMIT=$(git log -1 --oneline 2>/dev/null | head -1)
 print_ok "Latest commit: $LATEST_COMMIT"
 
-# Update the SHA cache so the twin doesn't notify about code we just pulled
-cd ~/ai-twin
+# Update SHA cache
 CURRENT_SHA=$(git rev-parse HEAD 2>/dev/null)
 if [[ -n "$CURRENT_SHA" ]]; then
-    mkdir -p ~/ai-twin-memory
     echo "$CURRENT_SHA" > ~/ai-twin-memory/last_known_commit.txt
     print_ok "SHA cache updated to ${CURRENT_SHA:0:8}"
 fi

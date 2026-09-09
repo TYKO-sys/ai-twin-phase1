@@ -115,19 +115,23 @@ fi
 cd ~
 
 # ------------------------------------------------------------
-# 3. Restore .env from backup (preserves API keys + SMTP + FreeLLMAPI key)
+# 3. Verify .env (DON'T overwrite the one Step 2 preserved)
 # ------------------------------------------------------------
-print_step "Step 3: Restore .env from backup"
-if [[ -f "$HOME/.env.backup" ]]; then
-    cp "$HOME/.env.backup" ~/ai-twin/.env
-    print_ok ".env restored from backup ($(wc -c < ~/ai-twin/.env) bytes)"
-elif [[ -f "$HOME/ai-twin-memory/env_backup.txt" ]]; then
-    cp "$HOME/ai-twin-memory/env_backup.txt" ~/ai-twin/.env
-    print_ok ".env restored from permanent storage ($(wc -c < ~/ai-twin/.env) bytes)"
-elif [[ -f ~/ai-twin/.env ]]; then
-    print_ok ".env already present"
+print_step "Step 3: Verify .env"
+if [[ -f ~/ai-twin/.env ]] && [[ -s ~/ai-twin/.env ]]; then
+    # .env exists and is non-empty -- Step 2 preserved it. DON'T OVERWRITE.
+    print_ok ".env already present ($(wc -c < ~/ai-twin/.env) bytes) -- NOT overwriting"
 else
-    print_warn "No .env backup found anywhere. You'll need to set API keys via the wizard."
+    # .env is missing or empty -- restore from backup
+    if [[ -f "$HOME/ai-twin-memory/env_backup.txt" ]] && [[ -s "$HOME/ai-twin-memory/env_backup.txt" ]]; then
+        cp "$HOME/ai-twin-memory/env_backup.txt" ~/ai-twin/.env
+        print_ok ".env restored from permanent storage ($(wc -c < ~/ai-twin/.env) bytes)"
+    elif [[ -f "$HOME/.env.backup" ]] && [[ -s "$HOME/.env.backup" ]]; then
+        cp "$HOME/.env.backup" ~/ai-twin/.env
+        print_ok ".env restored from home backup ($(wc -c < ~/ai-twin/.env) bytes)"
+    else
+        print_warn ".env is missing and no backup found. You'll need to set API keys."
+    fi
 fi
 
 cd ~/ai-twin

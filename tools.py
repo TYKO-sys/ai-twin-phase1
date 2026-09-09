@@ -884,6 +884,14 @@ GEMINI_TOOLS_CONFIG = {
 # Tool Execution
 # ---------------------------------------------------------------------- #
 
+def _tokenize(text):
+    """Split text into meaningful word tokens, ignoring stopwords."""
+    import re
+    stopwords = {"the", "a", "an", "to", "for", "and", "or", "of", "in", "on", "at", "by", "with", "is", "are", "was", "were", "be", "your", "you", "my", "me", "i", "this", "that"}
+    tokens = re.findall(r'[a-z0-9]+', text.lower())
+    return [t for t in tokens if t not in stopwords and len(t) > 2]
+
+
 def execute_tool(name: str, args: dict) -> str:
     """Execute a tool by name with the given arguments.
 
@@ -1196,6 +1204,27 @@ def tool_create_task(title: str, priority: str = "medium",
     Existing tasks with completed=True are treated as status='done' by the
     readers. Old 'details' fields are surfaced as 'notes' on read.
     """
+    # DEDUP CHECK
+    tasks = _load_tasks()
+    title_lower = title.lower().strip()
+    title_words = set(_tokenize(title_lower))
+    for existing in tasks:
+        if existing.get("completed"): continue
+        existing_title = existing.get("title", "").lower().strip()
+        existing_words = set(_tokenize(existing_title))
+        if not existing_words or not title_words: continue
+        intersection = title_words & existing_words
+        union = title_words | existing_words
+        similarity = len(intersection) / len(union) if union else 0
+        is_substring = (title_lower in existing_title or existing_title in title_lower)
+        if similarity >= 0.55 or is_substring:
+            return {
+                "status": "duplicate_detected",
+                "existing_task_id": existing["id"],
+                "existing_title": existing["title"],
+                "message": f"Similar task already exists (#{existing['id']}). Use update_task instead."
+            }
+
     try:
         # Normalize context string -> list
         if isinstance(context, str):

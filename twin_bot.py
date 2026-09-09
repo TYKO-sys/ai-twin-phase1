@@ -525,49 +525,52 @@ def _wait_for_network(max_wait: int = 90) -> bool:
     return False
 
 
-def _wait_for_freellmapi(timeout_seconds: int = 60):
-    """Wait for FreeLLMAPI to be available before starting the bot.
+def _wait_for_freellmapi(timeout_seconds: int = 15):
+    """Properly check FreeLLMAPI: socket first, then auth check. Non-blocking."""
+    import socket
+    import requests
+    from urllib3.util.retry import Retry
+    from requests.adapters import HTTPAdapter
 
-    FreeLLMAPI takes 15-30 seconds to start. If we don't wait, the twin's
-    first few calls will fail with 'Connection refused' and fall through
-    to slower providers.
-
-    Resilient: if anything fails, the twin still starts (just without waiting).
-    Only waits if FreeLLMAPI is the first provider in the active order.
-    """
     try:
-        # Determine provider order — use ModelManager if available, else default
-        order = ["freellmapi", "groq", "mistral", "openrouter",
-                 "cerebras", "zai", "gemini"]
-        try:
-            from model_manager import get_model_manager
-            mm = get_model_manager()
-            cfg_order = mm.get_provider_order()
-            if cfg_order:
-                order = cfg_order
-        except Exception:
-            pass  # Use the default order
-
-        if not order or order[0] != "freellmapi":
-            return  # FreeLLMAPI not first, don't wait
-
-        log.info("Checking if FreeLLMAPI is available...")
-        for i in range(timeout_seconds // 2):
-            try:
-                resp = requests.get("http://localhost:3001/v1/models", timeout=2)
-                if resp.status_code in (200, 401, 403):
-                    log.info("FreeLLMAPI is up. Starting twin.")
-                    return
-            except Exception:
-                pass
-            time.sleep(2)
-
-        log.warning(
-            f"FreeLLMAPI not available after {timeout_seconds}s. "
-            f"Starting twin anyway (will fall through to other providers)."
-        )
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result = sock.connect_ex(('127.0.0.1', 3001))
+        sock.close()
+        if result != 0:
+            logger.warning("FreeLLMAPI not listening on :3001")
+            return False
     except Exception as e:
-        log.error(f"Error waiting for FreeLLMAPI: {e}")
+        logger.warning(f"FreeLLMAPI socket check failed: {e}")
+        return False
+
+    try:
+        session = requests.Session()
+        adapter = HTTPAdapter(max_retries=Retry(total=0))
+        session.mount('http://', adapter)
+        api_key = os.getenv('FREELLMAPI_API_KEY', '').strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        resp = session.get("http://127.0.0.1:3001/v1/models", headers=headers, timeout=(5, 10))
+        try:
+            body = resp.json()
+        except Exception:
+            logger.warning(f"FreeLLMAPI non-JSON (status {resp.status_code})")
+            return False
+        if "error" in body:
+            logger.warning(f"FreeLLMAPI auth error: {body['error'].get('message', 'unknown')}")
+            return False
+        if "data" not in body or not body["data"]:
+            logger.warning("FreeLLMAPI returned no models")
+            return False
+        logger.info(f"FreeLLMAPI is up ({len(body['data'])} models)")
+        return True
+    except requests.exceptions.Timeout:
+        logger.warning("FreeLLMAPI read timed out (10s)")
+        return False
+    except Exception as e:
+        logger.warning(f"FreeLLMAPI check failed: {e}")
+        return False
+
 
 
 def _send_typing(chat_id: int) -> None:

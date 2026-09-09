@@ -11,6 +11,8 @@ Usage:
 
 import json
 import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.expanduser("~/ai-twin"), ".env"))
 import sys
 import time
 from pathlib import Path

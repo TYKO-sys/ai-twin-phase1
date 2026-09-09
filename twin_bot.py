@@ -3083,9 +3083,15 @@ def _check_reminders():
                 # lateness. Otherwise send it as if on time.
                 late_seconds = (now - when).total_seconds()
                 was_offline = late_seconds > 300  # >5 min late
+                # FIX (TWIN-REMINDER-LOGGING-FIX-1): Surface the ABSOLUTE
+                # due time in the message so the LLM has the context it
+                # needs to say "today" instead of echoing the stale
+                # relative phrase ("tomorrow morning") that may live in
+                # `what`. `when_display` stores the absolute time.
                 if was_offline:
                     msg = (
                         f"hey — you asked me to remind you about {what}. "
+                        f"it was due at {r.get('when_display', 'unknown')}. "
                         f"i was offline when it was due, but here it is."
                     )
                 else:

@@ -118,7 +118,7 @@ fi
 # Start the bot in a new detached tmux session
 # The 'while true' loop auto-restarts the bot if it crashes
 # (prevents tmux session from dying when Python exits)
-tmux new-session -d -s twin "while true; do cd ~/ai-twin && python twin_bot.py; echo 'Bot crashed, restarting in 5 seconds...'; sleep 5; done"
+tmux new-session -d -s twin "while true; do cd ~/ai-twin && python twin_bot.py 2>&1 | tee -a $HOME/ai-twin-memory/twin.log; echo 'Bot crashed, restarting in 5 seconds...'; sleep 5; done"
 
 echo "AI Twin started in background tmux session."
 echo ""

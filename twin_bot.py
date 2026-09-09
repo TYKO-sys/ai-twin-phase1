@@ -602,30 +602,46 @@ def _send_telegram_message(chat_id: int, text: str,
         # If conversion fails, escape HTML and send as-is
         html_text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            # Always send as standalone message (no reply_to_message_id)
-            # This removes the "reply preview" that Telegram shows
-            bot.send_message(chat_id, html_text, timeout=30)
-            return True
-        except Exception as e:
-            wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds
-            log.warning(
-                f"Telegram send failed (attempt {attempt+1}/{max_retries}): "
-                f"{type(e).__name__}: {e}. Retrying in {wait}s..."
-            )
-            if attempt < max_retries - 1:
-                time.sleep(wait)
-    log.error(f"Telegram send failed after {max_retries} attempts. "
-              f"Message LOST ({len(text)} chars).")
-    # Save the lost message to the unanswered queue so it gets reprocessed on restart
+    # BUG FIX (crash loop on ReadTimeout): Wrap the ENTIRE retry loop +
+    # fallback in an outer try/except so NO exception can ever propagate
+    # to the caller and crash the twin. Every failure path returns False
+    # instead of raising. This stops the restart-loop pattern observed
+    # when Telegram hit ReadTimeout at 09:56 — the exception escaped the
+    # retry block on certain code paths and propagated up to handle_text
+    # / the proactive loop, crashing the twin; the auto-restart wrapper
+    # brought it back but FreeLLMAPI was still down so it crashed again.
     try:
-        _save_to_unanswered_queue(text)
-        log.info("Message saved to unanswered queue for reprocessing on restart.")
-    except Exception:
-        pass
-    return False
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                # Always send as standalone message (no reply_to_message_id)
+                # This removes the "reply preview" that Telegram shows
+                bot.send_message(chat_id, html_text, timeout=30)
+                return True
+            except Exception as e:
+                wait = 2 ** (attempt + 1)  # 2, 4, 8, 16, 32 seconds
+                log.warning(
+                    f"Telegram send failed (attempt {attempt+1}/{max_retries}): "
+                    f"{type(e).__name__}: {e}. Retrying in {wait}s..."
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(wait)
+        # All 5 attempts failed — record the loss and salvage the message.
+        log.error(f"Telegram send failed after {max_retries} attempts. "
+                  f"Message LOST ({len(text)} chars).")
+        # Save the lost message to the unanswered queue so it gets reprocessed on restart
+        try:
+            _save_to_unanswered_queue(text)
+            log.info("Message saved to unanswered queue for reprocessing on restart.")
+        except Exception:
+            pass
+        return False  # Return False, don't raise
+    except Exception as e:
+        # Defense-in-depth: any unexpected exception (e.g. an error in the
+        # logging/save path, or a non-Exception subclass slipping through)
+        # is swallowed here so the twin NEVER crashes because of a send.
+        log.error(f"Telegram send error: {e}")
+        return False  # Return False, don't crash the twin
 
 
 def _handle_tool_failure(tool_name: str, error_msg: str, chat_id: int) -> None:
@@ -2984,6 +3000,17 @@ def _check_reminders():
     > 5 minutes), we acknowledge that in the message so the user knows
     why it's late — instead of pretending it just fired on time.
 
+    BUG FIX (reminders ignoring conversation): Before firing each due
+    reminder, we load the last 12 hours of conversation and check
+    whether the user already addressed the topic using
+    `_user_already_addressed()`. If they did (e.g. they already told
+    the twin "I handled the probation thing"), the reminder is marked
+    fired WITHOUT sending a message — so we don't nag the user about
+    something they already took care of. `_user_already_addressed()`
+    only returns True for topics it knows how to detect (probation,
+    apple, mta, mobility, etc.), so reminders about un-mapped topics
+    fall through and fire normally.
+
     Called from the proactive messaging loop (_proactive_messaging_loop_smart)
     every 15 minutes alongside the existing opportunity scoring. Cheap
     and idempotent — safe to call more often.
@@ -3002,6 +3029,15 @@ def _check_reminders():
 
         now = datetime.now()
         changed = False
+
+        # BUG FIX: Load the recent conversation once (last 12h) so each
+        # due reminder can be checked against what the user already said.
+        # Loaded outside the loop for efficiency; never fatal if it fails.
+        try:
+            recent_conv = _load_recent_conversation(hours=12)
+        except Exception:
+            recent_conv = ""
+
         for r in reminders:
             if not isinstance(r, dict) or r.get("fired"):
                 continue
@@ -3018,6 +3054,30 @@ def _check_reminders():
             if now >= when:
                 # Reminder is due — ping the user.
                 what = r.get("what", "(no content)")
+
+                # BUG FIX: If the user already addressed this topic in
+                # recent conversation, mark the reminder as fired WITHOUT
+                # sending a message — don't nag about handled items.
+                if recent_conv:
+                    try:
+                        fake_opp = {"reason": "reminder", "context": what}
+                        if _user_already_addressed(fake_opp, recent_conv):
+                            log.info(
+                                f"Reminder '{what[:50]}' skipped — user "
+                                f"already addressed this in conversation"
+                            )
+                            r["fired"] = True
+                            changed = True
+                            continue
+                    except Exception as ae:
+                        # If the addressed-check itself blows up, don't
+                        # block the reminder — just fire it normally.
+                        log.warning(
+                            f"_user_already_addressed check failed for "
+                            f"reminder '{what[:50]}': {ae} — firing normally"
+                        )
+
+                # Reminder is due and not (detectably) addressed — ping.
                 # If the twin was offline when the reminder was due (the
                 # reminder time passed >5 minutes ago), acknowledge the
                 # lateness. Otherwise send it as if on time.

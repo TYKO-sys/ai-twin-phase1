@@ -3619,25 +3619,44 @@ Write the message now:"""
 def _location_logging_loop():
     """Background thread that logs GPS location every 15 minutes.
 
-    Builds a pattern over time so the twin can infer where the user is
-    without calling GPS every time (see tool_infer_location). Only logs
-    during waking hours (7am-10pm) to save battery. Failures are logged
-    and swallowed — this thread must never crash the bot.
+    Detects (0,0) returns and surfaces a one-time notification so the user
+    knows location is silently broken (GPS off, permission missing, or
+    airplane mode).
     """
     from tools import tool_get_current_location
     log.info("Location logging started (checks every 15 minutes)")
 
+    _loc_fail_count = 0
+    _loc_notified = False
+
     while True:
-        time.sleep(900)  # 15 minutes
+        time.sleep(900)
         try:
-            # Only log during waking hours
             now = datetime.now()
             if now.hour < 7 or now.hour > 22:
                 continue
 
             result = tool_get_current_location()
             if "Location:" in result:
-                log.info(f"Location logged: {result[:80]}")
+                if "lat=0, lon=0" in result or "location unavailable" in result.lower():
+                    _loc_fail_count += 1
+                    log.warning(f"Location unavailable ({_loc_fail_count}x). GPS may be off or permission missing.")
+                    if _loc_fail_count >= 3 and not _loc_notified:
+                        notified_path = Path.home() / "ai-twin-memory" / "location_notified.txt"
+                        if not notified_path.exists():
+                            try:
+                                _send_telegram_message(
+                                    "Location access seems broken (returning 0,0). "
+                                    "If you want location features, run: termux-setup-location "
+                                    "and enable GPS in Android settings."
+                                )
+                                notified_path.write_text("notified", encoding="utf-8")
+                                _loc_notified = True
+                            except Exception:
+                                pass
+                else:
+                    _loc_fail_count = 0
+                    log.info(f"Location logged: {result[:80]}")
         except Exception as e:
             log.error(f"Location logging error: {e}")
 

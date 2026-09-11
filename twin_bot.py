@@ -538,10 +538,10 @@ def _wait_for_freellmapi(timeout_seconds: int = 15):
         result = sock.connect_ex(('127.0.0.1', 3001))
         sock.close()
         if result != 0:
-            logger.warning("FreeLLMAPI not listening on :3001")
+            logging.warning("FreeLLMAPI not listening on :3001")
             return False
     except Exception as e:
-        logger.warning(f"FreeLLMAPI socket check failed: {e}")
+        logging.warning(f"FreeLLMAPI socket check failed: {e}")
         return False
 
     try:
@@ -554,21 +554,21 @@ def _wait_for_freellmapi(timeout_seconds: int = 15):
         try:
             body = resp.json()
         except Exception:
-            logger.warning(f"FreeLLMAPI non-JSON (status {resp.status_code})")
+            logging.warning(f"FreeLLMAPI non-JSON (status {resp.status_code})")
             return False
         if "error" in body:
-            logger.warning(f"FreeLLMAPI auth error: {body['error'].get('message', 'unknown')}")
+            logging.warning(f"FreeLLMAPI auth error: {body['error'].get('message', 'unknown')}")
             return False
         if "data" not in body or not body["data"]:
-            logger.warning("FreeLLMAPI returned no models")
+            logging.warning("FreeLLMAPI returned no models")
             return False
-        logger.info(f"FreeLLMAPI is up ({len(body['data'])} models)")
+        logging.info(f"FreeLLMAPI is up ({len(body['data'])} models)")
         return True
     except requests.exceptions.Timeout:
-        logger.warning("FreeLLMAPI read timed out (10s)")
+        logging.warning("FreeLLMAPI read timed out (10s)")
         return False
     except Exception as e:
-        logger.warning(f"FreeLLMAPI check failed: {e}")
+        logging.warning(f"FreeLLMAPI check failed: {e}")
         return False
 
 
@@ -4008,9 +4008,14 @@ def _check_phone_lock() -> bool:
         return True  # Fail open
 
 
+_heartbeat_fail_count = 0
+_heartbeat_disabled = False
+
+
 def _update_phone_heartbeat():
-    """Update the gist with a fresh heartbeat."""
-    if not _gist_id or not _github_token:
+    """Update the gist with a fresh heartbeat. Disables itself after repeated 403s."""
+    global _heartbeat_fail_count, _heartbeat_disabled
+    if not _gist_id or not _github_token or _heartbeat_disabled:
         return
 
     try:
@@ -4024,16 +4029,34 @@ def _update_phone_heartbeat():
             json={"files": {"lock.json": {"content": content}}},
             timeout=15,
         )
-        if resp.status_code != 200:
+        if resp.status_code == 200:
+            _heartbeat_fail_count = 0
+            return
+        if resp.status_code in (403, 401):
+            _heartbeat_fail_count += 1
+            log.warning(f"Heartbeat auth failed ({resp.status_code}) - attempt {_heartbeat_fail_count}/3")
+            if _heartbeat_fail_count >= 3:
+                _heartbeat_disabled = True
+                try:
+                    failed_path = Path.home() / "ai-twin-memory" / "gist_failed.txt"
+                    failed_path.parent.mkdir(parents=True, exist_ok=True)
+                    failed_path.write_text(f"heartbeat_disabled_{resp.status_code}", encoding="utf-8")
+                except Exception:
+                    pass
+                log.warning("Phone lock heartbeat disabled after 3 auth failures. To re-enable: regenerate GitHub PAT with gist scope, delete ~/ai-twin-memory/gist_failed.txt and restart twin.")
+        else:
             log.warning(f"Failed to update heartbeat: {resp.status_code}")
     except Exception as e:
         log.warning(f"Error updating heartbeat: {e}")
 
 
 def _phone_lock_heartbeat_loop():
-    """Background thread that sends a heartbeat every 5 minutes."""
+    """Background thread that sends a heartbeat every 5 minutes.
+    Disables itself after 3 consecutive auth failures (403/401)."""
     while True:
-        time.sleep(300)  # 5 minutes
+        time.sleep(300)
+        if _heartbeat_disabled:
+            return
         _update_phone_heartbeat()
 
 

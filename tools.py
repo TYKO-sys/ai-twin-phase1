@@ -3361,22 +3361,12 @@ def tool_set_reminder(what: str, when: str) -> str:
             except Exception:
                 reminders = []
 
-        # FIX (TWIN-REMINDER-LOGGING-FIX-1): Embed the ABSOLUTE due date
-        # into the `what` text so that, when the reminder fires, the LLM
-        # sees "call northern pharmacy (due: Tuesday, September 09 at
-        # 09:00 AM)" instead of the raw relative phrase ("tomorrow
-        # morning"). Without this, the twin would read "tomorrow morning"
-        # back verbatim at fire time -- even if it is now THIS morning --
-        # and say "tomorrow" again. With the absolute date baked in, the
-        # LLM can compute the correct relative term (today / tomorrow /
-        # in 2 hours) from the due date + current time context.
-        what_with_date = (
-            f"{what} "
-            f"(due: {target_time.strftime('%A, %B %d at %I:%M %p')})"
-        )
-
+        # Store the absolute due date in a SEPARATE field so the LLM
+        # can compute relative time at fire time without the reminder
+        # text itself containing "(due: ...)" noise.
         reminder = {
-            "what": what_with_date,
+            "what": what,
+            "due_display": target_time.strftime('%A, %B %d at %I:%M %p'),
             "when_iso": target_time.isoformat(),
             "when_display": target_time.strftime("%a %I:%M %p"),
             "created": now.isoformat(),

@@ -28,19 +28,21 @@ KNOWLEDGE_DIR = Path.home() / "ai-twin-memory" / "knowledge"
 DOMAINS = [
     ("identity.md",
      "who TYKO is at their core",
-     """Update your understanding of who TYKO IS at their core.
+     """Update the USER'S IDENTITY — facts about who Michael Mazique is.
 
-This is about WHO they are, not WHAT happened to them.
+This is FACTS about the USER, NOT descriptions of yourself (the twin).
+NEVER write "You are a twin" or "You are an AI" or any description of yourself.
+ONLY write facts like: "You live in Baltimore" / "You are pursuing a WGU degree" / "You use crutches".
 
 RULES:
-- Keep only traits that have shown up CONSISTENTLY across multiple days, not single occurrences.
-- If something was observed only once, do NOT include it as a trait. One bad day doesn't define someone.
-- Remove traits that no longer seem accurate.
-- Write in second person: "You are..." not "They are..."
-- MAXIMUM 3 sentences. No more. This is the essence, not a biography.
-- If nothing changed about their core identity, keep the existing text and just update the date.
+- Store only CONCRETE FACTS about the user's life (location, occupation, health, education, legal status).
+- NEVER describe the twin's personality or role.
+- NEVER write "You are supportive" / "You are action-oriented".
+- Keep only facts that have been CONSISTENTLY mentioned across multiple days.
+- Write in second person: "You live in..." not "Michael lives in..."
+- MAXIMUM 5 facts. One per line. No paragraphs.
 
-Write the updated identity now:""",
+Output ONLY the updated identity facts:""",
      1000),  # ~250 tokens — strict limit
 
     ("situation.md",
@@ -95,22 +97,22 @@ Write the updated relationships now:""",
 
     ("patterns.md",
      "behavioral patterns — observed 3+ times minimum",
-     """Update behavioral patterns.
+     """Update PATTERNS — the USER'S observed behaviors (not the twin's).
+
+These are PATTERNS IN THE USER'S LIFE, NOT descriptions of the twin.
+NEVER write "You are resilient" / "You thrive under pressure".
+ONLY write: "You tend to juggle multiple tasks" / "You respond well to short reminders".
 
 CRITICAL RULE:
-- A pattern must be observed AT LEAST 3 TIMES across different days to be included.
-- ONE occurrence is NOT a pattern. If you've only seen something once, do NOT add it.
-- If a pattern was based on only 1-2 observations, REMOVE it.
-- Patterns are about HOW you approach things, not WHAT happened.
+- A pattern must be observed AT LEAST 3 TIMES across different days.
+- ONE occurrence is NOT a pattern.
 
 RULES:
-- MAXIMUM 5 patterns. Remove the least relevant if you have more.
-- Each pattern: ONE sentence describing the behavior + ONE sentence on what helps.
-- Do NOT include triggers, evidence lists, or detailed analysis. Just the pattern.
+- MAXIMUM 5 patterns. One sentence each.
+- NEVER describe the twin. NEVER write "You are [adjective]".
 - Remove patterns that no longer apply.
-- Write in second person: "You tend to..." not "The user tends to..."
 
-Write the updated patterns now:""",
+Output ONLY the updated patterns:""",
      1000),  # ~250 tokens
 
     ("completed.md",
@@ -256,7 +258,7 @@ Output ONLY the updated content for this domain. No preamble:"""
             try:
                 updated = llm_client.generate(
                     prompt=prompt,
-                    system_instruction="You are updating your own knowledge of someone you know well. Be accurate, specific, honest, and brief. Write in second person.",
+                    system_instruction="You are updating a knowledge base of FACTS about the user. Store only concrete facts, dates, and observed behaviors. NEVER describe yourself (the twin) or write personality statements. Be accurate, specific, honest, brief. Write in second person addressing the user.",
                 )
 
                 if updated and len(updated) > 20:

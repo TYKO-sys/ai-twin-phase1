@@ -166,7 +166,7 @@ Match the user's voice: casual profanity ok, "shit" used casually, "lmfao", "kin
 
 If it's a weekend (Saturday/Sunday), don't suggest calling offices. If a time reference in the context is in the past, acknowledge it and move on.
 
-One message. 1-3 sentences. Don't ask what to do. Don't ask "want me to..." Just say the thing.
+One message. 1-3 sentences. NEVER ask a question. NEVER ask "want me to..." or "what do you think" or "should I..." State the thing. Tell them what's next. You decide, you tell. They don't want to be asked. They want to be told.
 """
 
 # 3. KB_UPDATER — knowledge base domain updates.
@@ -579,6 +579,51 @@ def _send_typing(chat_id: int) -> None:
         bot.send_chat_action(chat_id, "typing")
     except Exception:
         pass
+
+
+
+
+def _filter_leaked_tool_syntax(text: str) -> str:
+    """Strip leaked tool-call syntax from LLM output before sending to user.
+
+    The LLM sometimes emits tool calls as text (e.g. "--- create task --- mirror
+    {json}") instead of using proper function-calling format. This filter catches
+    those patterns and removes them so the user never sees raw tool internals.
+    """
+    if not text:
+        return text
+    import re as _re
+    # Remove "--- <tool_name> --- mirror
+{json}" patterns
+    text = _re.sub(
+        r'---\s*\w[\w_]*\s*---\s*mirror\s*
+?\s*\{[^}]*\}',
+        '',
+        text
+    ).strip()
+    # Remove standalone "--- <something> --- mirror" lines
+    text = _re.sub(
+        r'^---\s*\w[\w_]*\s*---\s*mirror\s*$',
+        '',
+        text,
+        flags=_re.MULTILINE
+    ).strip()
+    # Remove raw JSON blocks that look like tool calls ({"title":"...","priority":"..."})
+    text = _re.sub(
+        r'\{"title"\s*:\s*"[^"]*"[^}]*\}',
+        '',
+        text
+    ).strip()
+    # Remove "miranda (tyko):" or similar persona leaks at start
+    text = _re.sub(
+        r'^\s*\w+\s*\([^)]*\)\s*:\s*',
+        '',
+        text
+    ).strip()
+    # Clean up multiple blank lines left behind
+    while '\n\n\n' in text:
+        text = text.replace('\n\n\n', '\n\n')
+    return text
 
 
 def _send_telegram_message(chat_id: int, text: str,
@@ -2516,7 +2561,7 @@ def _send_smart_proactive(opportunity: dict):
 
         # Different prompts for different reasons
         if reason == "morning_briefing":
-            prompt = f"""Write a 2-4 sentence morning brief to TYKO about today. Reference specific tasks. End with one direct question. Casual, lowercase, contractions, no AI-speak.
+            prompt = f"""Write a 2-4 sentence morning brief to TYKO about today. Reference specific tasks. State the ONE thing that matters most today. Don't ask anything. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Task context:
 {context}
@@ -2524,32 +2569,32 @@ Task context:
 Write the message:"""
             _mark_morning_briefing_sent()
         elif reason == "blocked_tasks":
-            prompt = f"""Write a 1-2 sentence check-in to TYKO. They have blocked tasks. Don't nag. Just acknowledge the situation and ask if they want help. Casual, lowercase, contractions, no AI-speak.
+            prompt = f"""Write a 1-2 sentence message to TYKO about their blocked tasks. Don't ask anything. State the situation and state the next move when it unblocks. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Task context:
 {context}
 
 Write the message:"""
         elif reason == "deadline_approaching":
-            prompt = f"""Write a 1-2 sentence reminder to TYKO about a deadline. Be specific. End with one direct question. Casual, lowercase, contractions, no AI-speak.
+            prompt = f"""Write a 1-2 sentence reminder to TYKO about a deadline. Be specific. State what needs to happen and when. Don't ask anything. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Context:
 {context}
 
 Write the message:"""
         elif reason == "midday_check":
-            prompt = """Write a 1-sentence light check-in to TYKO. Not clingy. Just "you good?" energy. Casual, lowercase, contractions, no AI-speak.
+            prompt = """Write a 1-sentence message to TYKO. State the next thing that matters today. Don't ask anything. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Write the message:"""
         elif reason == "evening_followup":
-            prompt = f"""Write a 1-2 sentence evening check-in to TYKO about their appointments today. Casual, lowercase, contractions, no AI-speak.
+            prompt = f"""Write a 1-2 sentence evening message to TYKO about what happened today and what's next. Don't ask anything. State it. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Context:
 {context}
 
 Write the message:"""
         elif reason == "long_silence":
-            prompt = f"""Write a 1-sentence check-in to TYKO who's been silent for a while. Not clingy. Just "what's up" energy. Casual, lowercase, contractions, no AI-speak.
+            prompt = f"""Write a 1-sentence message to TYKO who's been silent. State the next thing that matters. Don't ask anything. Casual, lowercase, contractions, no AI-speak. No questions.
 
 Context:
 {context}

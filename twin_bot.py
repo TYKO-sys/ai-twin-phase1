@@ -583,47 +583,7 @@ def _send_typing(chat_id: int) -> None:
 
 
 
-def _filter_leaked_tool_syntax(text: str) -> str:
-    """Strip leaked tool-call syntax from LLM output before sending to user.
 
-    The LLM sometimes emits tool calls as text (e.g. "--- create task --- mirror
-    {json}") instead of using proper function-calling format. This filter catches
-    those patterns and removes them so the user never sees raw tool internals.
-    """
-    if not text:
-        return text
-    import re as _re
-    # Remove "--- <tool_name> --- mirror
-{json}" patterns
-    text = _re.sub(
-        r'---\s*\w[\w_]*\s*---\s*mirror\s*
-?\s*\{[^}]*\}',
-        '',
-        text
-    ).strip()
-    # Remove standalone "--- <something> --- mirror" lines
-    text = _re.sub(
-        r'^---\s*\w[\w_]*\s*---\s*mirror\s*$',
-        '',
-        text,
-        flags=_re.MULTILINE
-    ).strip()
-    # Remove raw JSON blocks that look like tool calls ({"title":"...","priority":"..."})
-    text = _re.sub(
-        r'\{"title"\s*:\s*"[^"]*"[^}]*\}',
-        '',
-        text
-    ).strip()
-    # Remove "miranda (tyko):" or similar persona leaks at start
-    text = _re.sub(
-        r'^\s*\w+\s*\([^)]*\)\s*:\s*',
-        '',
-        text
-    ).strip()
-    # Clean up multiple blank lines left behind
-    while '\n\n\n' in text:
-        text = text.replace('\n\n\n', '\n\n')
-    return text
 
 
 def _send_telegram_message(chat_id: int, text: str,

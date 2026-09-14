@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+from attachments import register
 import os
 import random
 import re
